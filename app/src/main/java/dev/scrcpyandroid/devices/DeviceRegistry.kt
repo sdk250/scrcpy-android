@@ -34,6 +34,9 @@ class DeviceRegistry(
     private class Slot(var entry: DeviceEntry) {
         var job: Job? = null
         var conn: AdbConnection? = null
+
+        /** USB only: how to get this device back (ask for permission again / re-attach). */
+        var retry: (() -> Unit)? = null
     }
 
     private val lock = Any()
@@ -61,12 +64,54 @@ class DeviceRegistry(
         start(id, LinkKind.TCP) { tcpFactory(addr) }
     }
 
-    fun attach(id: String, kind: LinkKind, transport: suspend () -> AdbTransport) {
+    /**
+     * Connects [id] over [transport]. [retry] (USB) is what [retry] runs once the entry is
+     * OFFLINE again (connection lost, opening failed, disconnected).
+     */
+    fun attach(id: String, kind: LinkKind, retry: (() -> Unit)? = null, transport: suspend () -> AdbTransport) {
         synchronized(lock) {
             val map = if (kind == LinkKind.USB) usb else tcp
-            if (id !in map) map[id] = Slot(DeviceEntry(id, kind, DeviceState.OFFLINE))
+            val slot = map.getOrPut(id) { Slot(DeviceEntry(id, kind, DeviceState.OFFLINE)) }
+            if (retry != null) slot.retry = retry
         }
         start(id, kind, transport)
+    }
+
+    /**
+     * A plugged-in USB device that cannot be used yet (e.g. USB permission denied): listed as
+     * OFFLINE with [error]; tapping it runs [retry] via [retry].
+     */
+    fun usbUnavailable(id: String, error: String, retry: () -> Unit) {
+        synchronized(lock) {
+            val slot = usb.getOrPut(id) { Slot(DeviceEntry(id, LinkKind.USB, DeviceState.OFFLINE)) }
+            stop(slot)
+            slot.retry = retry
+            slot.entry = DeviceEntry(id, LinkKind.USB, DeviceState.OFFLINE, error = error)
+            publish()
+        }
+    }
+
+    /**
+     * User tapped an OFFLINE entry. TCP: reconnect. USB: shown as CONNECTING while its retry action
+     * runs (permission dialog or re-attach); the action reports back via [attach] or
+     * [usbUnavailable]. No-op for entries that are not OFFLINE.
+     */
+    fun retry(id: String) {
+        val action: () -> Unit
+        synchronized(lock) {
+            val u = usb[id]
+            if (u == null) {
+                if (tcp[id]?.entry?.state != DeviceState.OFFLINE) return
+                action = { parseHostPort(id)?.let(::connectTcp) }
+            } else {
+                val r = u.retry
+                if (u.entry.state != DeviceState.OFFLINE || u.job != null || r == null) return
+                u.entry = DeviceEntry(id, LinkKind.USB, DeviceState.CONNECTING)
+                publish()
+                action = r
+            }
+        }
+        action()
     }
 
     /** USB unplugged: stop and remove. */
@@ -78,17 +123,12 @@ class DeviceRegistry(
         }
     }
 
+    /** Closes the connection; the entry stays, OFFLINE, and can be retried (tapped) later. */
     fun disconnect(id: String) {
         synchronized(lock) {
-            val slot = usb[id]
-            if (slot != null) {
-                usb.remove(id)
-                stop(slot)
-            } else {
-                val t = tcp[id] ?: return
-                stop(t)
-                t.entry = t.entry.copy(state = DeviceState.OFFLINE, model = null, error = null)
-            }
+            val slot = usb[id] ?: tcp[id] ?: return
+            stop(slot)
+            slot.entry = slot.entry.copy(state = DeviceState.OFFLINE, model = null, error = null)
             publish()
         }
     }
@@ -118,10 +158,12 @@ class DeviceRegistry(
     private fun start(id: String, kind: LinkKind, transport: suspend () -> AdbTransport) {
         synchronized(lock) {
             val slot = (if (kind == LinkKind.USB) usb[id] else tcp[id]) ?: return
-            if (slot.entry.state != DeviceState.OFFLINE) return // already connecting / connected
+            // A job means already connecting / connected. (A USB entry can be CONNECTING without
+            // one while its retry action waits for the permission dialog.)
+            if (slot.job != null) return
             slot.entry = DeviceEntry(id, kind, DeviceState.CONNECTING)
             // LAZY so `slot.job` is assigned before the body can observe it.
-            val job = scope.launch(start = CoroutineStart.LAZY) { run(slot, id, kind, transport) }
+            val job = scope.launch(start = CoroutineStart.LAZY) { run(slot, transport) }
             slot.job = job
             publish()
             job.start()
@@ -137,7 +179,7 @@ class DeviceRegistry(
         }
     }
 
-    private suspend fun run(slot: Slot, id: String, kind: LinkKind, transport: suspend () -> AdbTransport) {
+    private suspend fun run(slot: Slot, transport: suspend () -> AdbTransport) {
         val me = synchronized(lock) { slot.job }
         var conn: AdbConnection? = null
         try {
@@ -148,27 +190,31 @@ class DeviceRegistry(
             val c = conn
             update(slot, me, { it.copy(state = DeviceState.DEVICE, model = c.model, error = null) }, c)
             c.closed.first { it }
-            finishClosed(slot, me, id, kind, "Connection closed")
+            finishClosed(slot, me, CONNECTION_LOST)
         } catch (e: CancellationException) {
             conn?.close()
             throw e
         } catch (e: Throwable) {
             conn?.close()
-            finishClosed(slot, me, id, kind, e.message ?: e.javaClass.simpleName)
+            finishClosed(slot, me, e.message ?: e.javaClass.simpleName)
         }
     }
 
-    private fun finishClosed(slot: Slot, me: Job?, id: String, kind: LinkKind, error: String) {
+    /**
+     * The connection ended or could not be made. The entry stays as OFFLINE with [error] for both
+     * kinds (USB entries are removed only by [detach], i.e. when unplugged) so it can be retried.
+     */
+    private fun finishClosed(slot: Slot, me: Job?, error: String) {
         synchronized(lock) {
             if (slot.job !== me) return
             slot.conn = null
             slot.job = null
-            if (kind == LinkKind.USB && error == "Connection closed") {
-                usb.remove(id)
-            } else {
-                slot.entry = slot.entry.copy(state = DeviceState.OFFLINE, model = null, error = error)
-            }
+            slot.entry = slot.entry.copy(state = DeviceState.OFFLINE, model = null, error = error)
             publish()
         }
+    }
+
+    private companion object {
+        const val CONNECTION_LOST = "连接已断开"
     }
 }

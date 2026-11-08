@@ -191,4 +191,92 @@ class DeviceRegistryTest {
         assertEquals(DeviceState.OFFLINE, e.state)
         assertTrue(e.error!!.contains("no permission"))
     }
+
+    @Test
+    fun offlineUsbEntryRetryInvokesActionAndGoesConnecting() = runTest {
+        val reg = registry(MemStore(listOf("a:5555"))) { error("unused") }
+        var retries = 0
+        val retry = { retries++; Unit }
+        reg.usbUnavailable("/dev/bus/usb/001/002", "未授予 USB 权限，点击重试", retry)
+        val e = reg.devices.value.first()
+        assertEquals(listOf("/dev/bus/usb/001/002", "a:5555"), reg.devices.value.map { it.id })
+        assertEquals(LinkKind.USB, e.kind)
+        assertEquals(DeviceState.OFFLINE, e.state)
+        assertEquals("未授予 USB 权限，点击重试", e.error)
+
+        reg.retry(e.id)
+        assertEquals(1, retries)
+        assertEquals(DeviceState.CONNECTING, reg.devices.value.first().state)
+        assertNull(reg.devices.value.first().error)
+        reg.retry(e.id) // not OFFLINE any more: ignored
+        assertEquals(1, retries)
+
+        // Permission denied again.
+        reg.usbUnavailable(e.id, "未授予 USB 权限，点击重试", retry)
+        assertEquals(DeviceState.OFFLINE, reg.devices.value.first().state)
+        assertEquals(2, reg.devices.value.size)
+    }
+
+    @Test
+    fun usbRetryWithPermissionReattaches() = runTest {
+        val peer = FakeAdbd()
+        val reg = registry { error("unused") }
+        lateinit var retry: () -> Unit
+        retry = { reg.attach("SER1", LinkKind.USB, retry) { peer.transport } }
+        reg.usbUnavailable("SER1", "未授予 USB 权限，点击重试", retry)
+        reg.retry("SER1")
+        runCurrent()
+        assertEquals(DeviceState.CONNECTING, reg.devices.value.single().state)
+        peer.expect(Adb.CNXN)
+        cnxn(peer)
+        runCurrent()
+        assertEquals(DeviceState.DEVICE, reg.devices.value.single().state)
+        assertNotNull(reg.connection("SER1"))
+    }
+
+    @Test
+    fun usbUnexpectedCloseStaysOfflineAndRetryable() = runTest {
+        var peer = FakeAdbd()
+        val reg = registry { error("unused") }
+        var retries = 0
+        lateinit var retry: () -> Unit
+        retry = { retries++; reg.attach("SER1", LinkKind.USB, retry) { peer.transport } }
+        reg.attach("SER1", LinkKind.USB, retry) { peer.transport }
+        runCurrent()
+        peer.expect(Adb.CNXN)
+        cnxn(peer)
+        runCurrent()
+        assertEquals(DeviceState.DEVICE, reg.devices.value.single().state)
+
+        peer.transport.close() // link died, device not detached
+        runCurrent()
+        val e = reg.devices.value.single()
+        assertEquals("SER1", e.id)
+        assertEquals(DeviceState.OFFLINE, e.state)
+        assertNotNull(e.error)
+        assertNull(reg.connection("SER1"))
+
+        peer = FakeAdbd()
+        reg.retry("SER1")
+        runCurrent()
+        assertEquals(1, retries)
+        peer.expect(Adb.CNXN)
+        cnxn(peer)
+        runCurrent()
+        assertEquals(DeviceState.DEVICE, reg.devices.value.single().state)
+
+        reg.detach("SER1") // unplugged: removed
+        assertTrue(reg.devices.value.isEmpty())
+    }
+
+    @Test
+    fun retryOfflineTcpEntryReconnects() = runTest {
+        var calls = 0
+        val peer = FakeAdbd()
+        val reg = registry(MemStore(listOf("10.0.0.2:5555"))) { calls++; peer.transport }
+        reg.retry("10.0.0.2:5555")
+        runCurrent()
+        assertEquals(1, calls)
+        assertEquals(DeviceState.CONNECTING, reg.devices.value.single().state)
+    }
 }

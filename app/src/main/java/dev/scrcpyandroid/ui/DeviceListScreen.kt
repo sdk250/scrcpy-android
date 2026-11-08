@@ -37,7 +37,6 @@ import dev.scrcpyandroid.devices.DeviceEntry
 import dev.scrcpyandroid.devices.DeviceRegistry
 import dev.scrcpyandroid.devices.DeviceState
 import dev.scrcpyandroid.devices.LinkKind
-import dev.scrcpyandroid.devices.parseHostPort
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -96,9 +95,8 @@ private fun DeviceRow(d: DeviceEntry, registry: DeviceRegistry, onMirror: (Strin
                 onClick = {
                     when (d.state) {
                         DeviceState.DEVICE -> onMirror(d.id)
-                        DeviceState.OFFLINE -> if (d.kind == LinkKind.TCP) {
-                            parseHostPort(d.id)?.let { registry.connectTcp(it) }
-                        }
+                        // TCP: reconnect; USB: ask for permission again or re-attach.
+                        DeviceState.OFFLINE -> registry.retry(d.id)
                         else -> Unit
                     }
                 },

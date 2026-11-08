@@ -10,13 +10,21 @@ import android.hardware.usb.UsbManager
 import androidx.core.content.ContextCompat
 import dev.scrcpyandroid.adb.UsbAdb
 
-/** Thin glue between USB broadcasts and [DeviceRegistry]; the state machine lives in the registry. */
+/**
+ * Thin glue between USB broadcasts and [DeviceRegistry]; the state machine lives in the registry.
+ * Everything here runs on the main thread (broadcasts and the registry's retry actions, which are
+ * invoked from list taps).
+ */
 class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
     private val context = context.applicationContext
     private val usb = this.context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    // Registry id per attached device name, so detach can remove it even after serialNumber becomes unreadable.
+    // Registry id per attached device name, so detach can remove it even after serialNumber becomes
+    // unreadable. Kept while the device is plugged in (also while its entry is OFFLINE).
     private val ids = HashMap<String, String>()
+
+    // Device names with a permission dialog in flight (one request per device).
+    private val pendingPermission = HashSet<String>()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, intent: Intent) {
@@ -24,8 +32,15 @@ class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> onAttached(device)
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> onDetached(device)
-                ACTION_PERMISSION -> if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                    onPermitted(device)
+                ACTION_PERMISSION -> {
+                    pendingPermission.remove(device.deviceName)
+                    // The answer may arrive after the device was unplugged.
+                    if (!isAttached(device)) return
+                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
+                        onPermitted(device)
+                    } else {
+                        onDenied(device)
+                    }
                 }
             }
         }
@@ -50,24 +65,41 @@ class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
         if (usb.hasPermission(device)) onPermitted(device) else requestPermission(device)
     }
 
-    private fun onPermitted(device: UsbDevice) {
-        val id = ids.getOrPut(device.deviceName) {
-            try {
-                device.serialNumber
-            } catch (_: SecurityException) {
-                null
-            } ?: device.deviceName
-        }
-        // A SecurityException from openDevice surfaces as an OFFLINE entry with an error.
-        registry.attach(id, LinkKind.USB) { UsbAdb.open(usb, device) }
+    private fun idOf(device: UsbDevice): String = ids.getOrPut(device.deviceName) {
+        try {
+            device.serialNumber
+        } catch (_: SecurityException) {
+            null
+        } ?: device.deviceName
     }
 
+    private fun onPermitted(device: UsbDevice) {
+        // A SecurityException from openDevice surfaces as an OFFLINE entry with an error.
+        registry.attach(idOf(device), LinkKind.USB, retry = { retry(device) }) { UsbAdb.open(usb, device) }
+    }
+
+    /** Permission denied or dialog dismissed: list it as OFFLINE; tapping it asks again. */
+    private fun onDenied(device: UsbDevice) {
+        if (UsbAdb.findAdbInterface(device) == null) return
+        registry.usbUnavailable(idOf(device), PERMISSION_DENIED) { retry(device) }
+    }
+
+    /** Tap on the OFFLINE entry: ask for permission if still missing, else connect again. */
+    private fun retry(device: UsbDevice) {
+        if (!isAttached(device)) return
+        if (usb.hasPermission(device)) onPermitted(device) else requestPermission(device)
+    }
+
+    private fun isAttached(device: UsbDevice) = usb.deviceList.containsKey(device.deviceName)
+
     private fun onDetached(device: UsbDevice) {
+        pendingPermission.remove(device.deviceName)
         val id = ids.remove(device.deviceName) ?: return
         registry.detach(id)
     }
 
     private fun requestPermission(device: UsbDevice) {
+        if (!pendingPermission.add(device.deviceName)) return
         val intent = Intent(ACTION_PERMISSION).setPackage(context.packageName)
         val pi = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_MUTABLE)
         usb.requestPermission(device, pi)
@@ -83,5 +115,6 @@ class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
 
     private companion object {
         const val ACTION_PERMISSION = "dev.scrcpyandroid.USB_PERMISSION"
+        const val PERMISSION_DENIED = "未授予 USB 权限，点击重试"
     }
 }
