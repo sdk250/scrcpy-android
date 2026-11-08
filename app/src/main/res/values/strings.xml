@@ -55,4 +55,16 @@
     <string name="key_export_failed">导出失败：%1$s</string>
     <string name="key_error_generic">操作失败：%1$s</string>
     <string name="key_loading">正在加载…</string>
+
+    <string name="key_back">返回</string>
+    <string name="key_home">主页</string>
+    <string name="key_recents">多任务</string>
+    <string name="key_volume_up">音量+</string>
+    <string name="key_volume_down">音量−</string>
+    <string name="key_power">电源</string>
+    <string name="key_keyboard">键盘</string>
+    <string name="key_exit">退出</string>
+    <string name="mirror_no_device_title">无法投屏</string>
+    <string name="mirror_no_device">设备未连接或不可用，请返回设备列表重新连接。</string>
+    <string name="mirror_no_log">（没有服务端日志）</string>
 </resources>

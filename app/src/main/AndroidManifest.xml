@@ -26,6 +26,9 @@
         </activity>
         <activity
             android:name=".ui.MirrorActivity"
-            android:exported="false" />
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
+            android:windowSoftInputMode="adjustNothing|stateHidden" />
     </application>
 </manifest>
