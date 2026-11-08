@@ -98,10 +98,8 @@ class AdbConnection private constructor(
         val stream = streams[msg.arg1] ?: return
         when (msg.command) {
             Adb.OKAY -> stream.onOkay(msg.arg0)
-            Adb.WRTE -> {
-                stream.onData(msg.payload)
-                send(AdbMessage(Adb.OKAY, stream.localId, msg.arg0))
-            }
+            // The OKAY is deferred until the consumer takes the chunk (flow control).
+            Adb.WRTE -> stream.onData(msg.payload)
             Adb.CLSE -> {
                 streams.remove(stream.localId)
                 val remote = stream.onPeerClose()

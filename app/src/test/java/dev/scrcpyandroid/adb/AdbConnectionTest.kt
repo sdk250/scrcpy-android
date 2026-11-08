@@ -75,12 +75,12 @@ class AdbConnectionTest {
         peer.send(Adb.OKAY, 77, open.arg0)
         val s = opening.await()
         peer.send(Adb.WRTE, 77, open.arg0, "hi\n".toByteArray())
-        peer.send(Adb.CLSE, 77, open.arg0)
         assertEquals("hi\n", String(s.read()!!))
-        assertNull(s.read())
         val ok = peer.expect(Adb.OKAY)
         assertEquals(open.arg0, ok.arg0)
         assertEquals(77, ok.arg1)
+        peer.send(Adb.CLSE, 77, open.arg0)
+        assertNull(s.read())
         val clse = peer.expect(Adb.CLSE)
         assertEquals(open.arg0, clse.arg0)
         assertEquals(77, clse.arg1)
@@ -114,6 +114,19 @@ class AdbConnectionTest {
         assertEquals(1808, peer.expect(Adb.WRTE).payload.size)
         peer.send(Adb.OKAY, 5, local)
         w.join()
+    }
+
+    @Test
+    fun okayForWrteIsDeferredUntilConsumerReads() = runTest {
+        val (peer, conn) = connected()
+        val s = openStream(peer, conn, 5)
+        peer.send(Adb.WRTE, 5, 1, "abc".toByteArray())
+        runCurrent()
+        assertFalse(peer.hasPendingBytes())
+        assertEquals("abc", String(s.read()!!))
+        val ok = peer.expect(Adb.OKAY)
+        assertEquals(1, ok.arg0)
+        assertEquals(5, ok.arg1)
     }
 
     @Test

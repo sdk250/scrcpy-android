@@ -78,7 +78,13 @@ class AdbStream internal constructor(
     }
 
     /** Next chunk of data, or null once the peer closed the stream (or the connection died). */
-    suspend fun read(): ByteArray? = incoming.receiveCatching().getOrNull()
+    suspend fun read(): ByteArray? = incoming.receiveCatching().getOrNull()?.also { acknowledge() }
+
+    /** Releases the peer to send its next WRTE; skipped once the stream is closed. */
+    private fun acknowledge() {
+        if (finished || !opened.isCompleted || opened.isCancelled) return
+        conn.sendAsync(AdbMessage(Adb.OKAY, localId, opened.getCompleted()))
+    }
 
     fun asInputStream(): InputStream = object : InputStream() {
         private var cur: ByteArray? = null
@@ -121,6 +127,7 @@ class AdbStream internal constructor(
                 try {
                     val r = runBlocking { incoming.receiveCatching() }
                     val v = r.getOrNull() ?: return null
+                    acknowledge()
                     if (v.isNotEmpty()) return v
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
