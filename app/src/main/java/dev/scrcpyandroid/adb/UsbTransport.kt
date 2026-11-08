@@ -31,6 +31,7 @@ class UsbTransport(
 
     override suspend fun write(bytes: ByteArray) {
         withContext(Dispatchers.IO) {
+            if (closed) throw IOException("USB transport closed")
             var off = 0
             while (off < bytes.size) {
                 if (closed) throw IOException("USB transport closed")
@@ -42,6 +43,7 @@ class UsbTransport(
     }
 
     override suspend fun readFully(n: Int): ByteArray = withContext(Dispatchers.IO) {
+        if (closed) throw IOException("USB transport closed")
         val out = ByteArray(n)
         var got = 0
         while (got < n) {
