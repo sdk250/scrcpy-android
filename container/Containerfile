@@ -1,0 +1,10 @@
+FROM docker.io/library/debian:13
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+ENV ANDROID_HOME=/opt/android-sdk GRADLE_USER_HOME=/gradle
+RUN mkdir -p /opt/android-sdk/cmdline-tools /gradle \
+    && curl -fsSL -o /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip -q /tmp/clt.zip -d /tmp/clt && mv /tmp/clt/cmdline-tools /opt/android-sdk/cmdline-tools/latest && rm -rf /tmp/clt /tmp/clt.zip
+ENV PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools
+RUN yes | sdkmanager --licenses >/dev/null \
+    && sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
