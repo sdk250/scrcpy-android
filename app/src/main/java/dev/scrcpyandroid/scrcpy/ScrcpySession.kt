@@ -90,6 +90,10 @@ class ScrcpySession(
     private val ended = AtomicBoolean(false)
     private val endedEmitted = AtomicBoolean(false)
     private val released = CompletableDeferred<Unit>()
+    private val releaseDone = AtomicBoolean(false)
+
+    /** Set once the video loop coroutine has been launched; from then on it owns [releaseVideo]. */
+    @Volatile private var videoLaunched = false
     private val log = LogBuffer(LOG_LIMIT)
     private val shellDone = CompletableDeferred<Unit>()
     private val outgoing = Channel<ByteArray>(Channel.UNLIMITED)
@@ -118,20 +122,21 @@ class ScrcpySession(
             check(ended.get()) { "start() may only be called once" }
             return
         }
-        var loopLaunched = false
         val job = scope.launch {
             try {
-                loopLaunched = connect(sinkFactory)
+                connect(sinkFactory)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 finish(if (conn.closed.value) "connection lost" else (e.message ?: e.toString()))
             } finally {
-                if (!loopLaunched) {
-                    videoDispatcher.close()
-                    released.complete(Unit)
-                }
+                if (!videoLaunched) releaseVideo()
             }
+        }
+        // Also runs if the job is cancelled (e.g. [scope] cancelled) before its body ever started.
+        job.invokeOnCompletion { cause ->
+            if (cause != null) finish("cancelled")
+            if (!videoLaunched) releaseVideo()
         }
         startJob = job
         if (ended.get()) job.cancel()
@@ -159,9 +164,8 @@ class ScrcpySession(
      */
     suspend fun awaitReleased() = released.await()
 
-    /** Returns true if the video loop was launched (it then owns [videoDispatcher]). */
-    private suspend fun connect(sinkFactory: (VideoCodec, (Int, Int) -> Unit) -> FrameSink): Boolean {
-        if (ended.get()) return false
+    private suspend fun connect(sinkFactory: (VideoCodec, (Int, Int) -> Unit) -> FrameSink) {
+        if (ended.get()) return
         val bytes = serverBytes()
         val mtime = serverMtime(version)
         val st = conn.stat(ServerCommand.REMOTE_PATH)
@@ -181,7 +185,7 @@ class ScrcpySession(
         }
         if (header.codecId != options.codec.id) {
             finish("unexpected codec 0x%08x (requested %s)".format(header.codecId, options.codec.arg))
-            return false
+            return
         }
 
         val c = adopt(conn.open(service)) { control = it }
@@ -190,9 +194,11 @@ class ScrcpySession(
         scope.launch { writeLoop(c) }
 
         onSessionSize(header.width, header.height)
-        if (ended.get()) return false
-        scope.launch(videoDispatcher) { videoLoop(reader, header, sinkFactory) }
-        return true
+        if (ended.get()) return
+        val videoJob = scope.launch(videoDispatcher) { videoLoop(reader, header, sinkFactory) }
+        videoLaunched = true
+        // If the job is cancelled before its body runs, the finally in videoLoop never executes.
+        videoJob.invokeOnCompletion { releaseVideo() }
     }
 
     /** Publishes [s] via [set]; if the session ended meanwhile, closes it and aborts. */
@@ -272,13 +278,22 @@ class ScrcpySession(
         } catch (e: Throwable) {
             finish(if (conn.closed.value) "connection lost" else "video error: ${e.message ?: e}")
         } finally {
-            try {
-                sink?.release()
-            } catch (_: Throwable) {
-            }
-            videoDispatcher.close()
-            released.complete(Unit)
+            releaseVideo()
         }
+    }
+
+    /**
+     * Idempotent: releases the sink (if one was created), shuts the video thread down and completes
+     * [released]. Only called once the video loop has finished or can no longer run.
+     */
+    private fun releaseVideo() {
+        if (!releaseDone.compareAndSet(false, true)) return
+        try {
+            sink?.release()
+        } catch (_: Throwable) {
+        }
+        videoDispatcher.close()
+        released.complete(Unit)
     }
 
     /** New server-side size: display size resets to it until the decoder reports its own. */
@@ -312,8 +327,7 @@ class ScrcpySession(
         sink?.abort()
         if (started.compareAndSet(false, true)) {
             // start() was never called: nothing will ever use the video thread.
-            videoDispatcher.close()
-            released.complete(Unit)
+            releaseVideo()
         }
         startJob?.cancel()
         outgoing.close()

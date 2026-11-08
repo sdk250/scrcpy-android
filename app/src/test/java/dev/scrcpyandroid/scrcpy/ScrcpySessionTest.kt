@@ -6,7 +6,12 @@ import dev.scrcpyandroid.adb.AdbKeyPair
 import dev.scrcpyandroid.adb.AdbMessage
 import dev.scrcpyandroid.adb.FakeAdbd
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.first
@@ -326,5 +331,19 @@ class ScrcpySessionTest {
         s.awaitReleased()
         s.start { _, _ -> error("must not create a sink") }
         assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+    }
+
+    @Test
+    fun scopeCancelledBeforeStartRunsStillReleases() = runTest {
+        val (_, conn) = connected()
+        val sessionScope = CoroutineScope(backgroundScope.coroutineContext + Job(backgroundScope.coroutineContext[Job]))
+        val s = ScrcpySession(conn, ScrcpyOptions(), version, { server }, sessionScope, scid = scid)
+        // Runs until start() suspends in join(): its launched job is queued but has not run yet.
+        val started = async(start = CoroutineStart.UNDISPATCHED) { s.start { _, _ -> error("no sink expected") } }
+        sessionScope.cancel()
+        withTimeout(5_000) { s.awaitReleased() }
+        started.await()
+        val ended = s.events.replayCache.single() as SessionEvent.Ended
+        assertEquals("cancelled", ended.reason)
     }
 }
