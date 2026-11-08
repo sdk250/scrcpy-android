@@ -54,9 +54,8 @@ class AdbConnection private constructor(
     }
 
     internal suspend fun send(msg: AdbMessage) {
-        val bytes = msg.encode() // header + payload in a single transport write
         try {
-            writeMutex.withLock { transport.write(bytes) }
+            writeMutex.withLock { transport.writeMessage(msg) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -132,8 +131,8 @@ class AdbConnection private constructor(
             onAuthPending: () -> Unit = {},
         ): AdbConnection {
             try {
-                transport.write(
-                    AdbMessage(Adb.CNXN, Adb.VERSION, Adb.MAX_PAYLOAD, "host::\u0000".toByteArray()).encode(),
+                transport.writeMessage(
+                    AdbMessage(Adb.CNXN, Adb.VERSION, Adb.MAX_PAYLOAD, "host::\u0000".toByteArray()),
                 )
                 var tokens = 0
                 // No timeout here on purpose: the user may take minutes to accept the key on the device.
@@ -144,12 +143,12 @@ class AdbConnection private constructor(
                             if (msg.arg0 != Adb.AUTH_TOKEN) throw AdbProtocolException("Unexpected AUTH type ${msg.arg0}")
                             tokens++
                             when (tokens) {
-                                1 -> transport.write(
-                                    AdbMessage(Adb.AUTH, Adb.AUTH_SIGNATURE, 0, key.signToken(msg.payload)).encode(),
+                                1 -> transport.writeMessage(
+                                    AdbMessage(Adb.AUTH, Adb.AUTH_SIGNATURE, 0, key.signToken(msg.payload)),
                                 )
                                 2 -> {
-                                    transport.write(
-                                        AdbMessage(Adb.AUTH, Adb.AUTH_RSAPUBLICKEY, 0, key.publicKeyPayload()).encode(),
+                                    transport.writeMessage(
+                                        AdbMessage(Adb.AUTH, Adb.AUTH_RSAPUBLICKEY, 0, key.publicKeyPayload()),
                                     )
                                     onAuthPending()
                                 }

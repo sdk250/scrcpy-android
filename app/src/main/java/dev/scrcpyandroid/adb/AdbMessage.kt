@@ -32,19 +32,24 @@ data class AdbHeader(val command: Int, val arg0: Int, val arg1: Int, val length:
 class AdbProtocolException(msg: String) : IOException(msg)
 
 /** Encodes the 24-byte header followed by the payload, all integers little-endian. */
-fun AdbMessage.encode(): ByteArray {
+fun AdbMessage.encode(): ByteArray = encodeHeader() + payload
+
+/** Encodes only the 24-byte header (little-endian); the payload is sent separately. */
+fun AdbMessage.encodeHeader(): ByteArray {
     var checksum = 0
     for (b in payload) checksum += b.toInt() and 0xFF
-    val buf = ByteBuffer.allocate(Adb.HEADER_SIZE + payload.size).order(ByteOrder.LITTLE_ENDIAN)
+    val buf = ByteBuffer.allocate(Adb.HEADER_SIZE).order(ByteOrder.LITTLE_ENDIAN)
     buf.putInt(command)
     buf.putInt(arg0)
     buf.putInt(arg1)
     buf.putInt(payload.size)
     buf.putInt(checksum)
     buf.putInt(command xor -1)
-    buf.put(payload)
     return buf.array()
 }
+
+/** Writes [msg] through [AdbTransport.writeMessage] (header and payload as separate parts). */
+internal suspend fun AdbTransport.writeMessage(msg: AdbMessage) = writeMessage(msg.encodeHeader(), msg.payload)
 
 /** Decodes the first 24 bytes of [b]; throws [AdbProtocolException] if too short or the magic is wrong. */
 fun decodeHeader(b: ByteArray): AdbHeader {

@@ -164,4 +164,40 @@ class UsbTransportTest {
             }
         }
     }
+
+    @Test
+    fun cnxnHeaderIsItsOwnTransferFollowedByPayload() = runBlocking {
+        // adbd (Android 11+ daemon/usb.cpp) rejects a header transfer that is not exactly 24 bytes.
+        val io = FakeUsbIo(inError = true) // handshake fails right after CNXN was written
+        try {
+            AdbConnection.connect(UsbTransport(io, "usb:fake"), AdbKeyPair.generate(), this)
+            fail("expected IOException")
+        } catch (_: IOException) {
+        }
+        val expected = AdbMessage(Adb.CNXN, Adb.VERSION, Adb.MAX_PAYLOAD, "host::\u0000".toByteArray()).encode()
+        assertEquals(listOf(24, expected.size - 24), io.outLengths)
+        assertArrayEquals(expected, io.outBytes.toByteArray())
+    }
+
+    @Test
+    fun writeMessageSendsZeroLengthPacketOnlyForMultiplesOfMaxPacketSize() = runBlocking {
+        val header = ByteArray(24) { 1 }
+        val cases = mapOf(
+            0 to listOf(24),
+            100 to listOf(24, 100),
+            511 to listOf(24, 511),
+            512 to listOf(24, 512, 0),
+            513 to listOf(24, 513),
+            1024 to listOf(24, 1024, 0),
+            32768 to listOf(24, 16384, 16384, 0),
+            40000 to listOf(24, 16384, 16384, 7232),
+        )
+        for ((size, lengths) in cases) {
+            val io = FakeUsbIo(maxPacketSize = 512)
+            val payload = ByteArray(size) { (it * 3).toByte() }
+            UsbTransport(io, "usb:fake").writeMessage(header, payload)
+            assertEquals("payload $size", lengths, io.outLengths)
+            assertArrayEquals(header + payload, io.outBytes.toByteArray())
+        }
+    }
 }

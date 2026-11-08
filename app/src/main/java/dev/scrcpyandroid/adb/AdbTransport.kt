@@ -12,6 +12,14 @@ import java.net.Socket
 interface AdbTransport : Closeable {
     suspend fun write(bytes: ByteArray)
 
+    /**
+     * Writes one ADB message. Stream transports send header and payload back to back; USB needs
+     * the 24-byte header as its own bulk transfer (see [UsbTransport.writeMessage]).
+     */
+    suspend fun writeMessage(header: ByteArray, payload: ByteArray) {
+        write(if (payload.isEmpty()) header else header + payload)
+    }
+
     /** Reads exactly [n] bytes; throws [EOFException] when the peer closed before that. */
     suspend fun readFully(n: Int): ByteArray
 

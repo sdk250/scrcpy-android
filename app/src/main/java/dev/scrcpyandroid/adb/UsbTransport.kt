@@ -30,16 +30,37 @@ class UsbTransport(
     private var closed = false
 
     override suspend fun write(bytes: ByteArray) {
+        withContext(Dispatchers.IO) { bulkWrite(bytes) }
+    }
+
+    /**
+     * adbd over USB reads the 24-byte header as its own transfer (Android 11+ daemon/usb.cpp
+     * rejects a header block of any other size; older adbd reads exactly 24 bytes), so the header
+     * goes out alone, then the payload (in <= 16 KiB segments), then a zero-length packet when the
+     * payload ends on a max-packet boundary (as libadb does), so the device sees the transfer end.
+     */
+    override suspend fun writeMessage(header: ByteArray, payload: ByteArray) {
         withContext(Dispatchers.IO) {
-            if (closed) throw IOException("USB transport closed")
-            var off = 0
-            while (off < bytes.size) {
-                if (closed) throw IOException("USB transport closed")
-                val len = minOf(WRITE_SEGMENT, bytes.size - off)
-                if (io.bulkOut(bytes, off, len) < 0) throw IOException("USB transfer failed")
-                off += len
-            }
+            bulkWrite(header)
+            if (payload.isEmpty()) return@withContext
+            bulkWrite(payload)
+            if (payload.size % io.maxPacketSize == 0) transfer(payload, 0, 0)
         }
+    }
+
+    private fun bulkWrite(bytes: ByteArray) {
+        if (closed) throw IOException("USB transport closed")
+        var off = 0
+        while (off < bytes.size) {
+            val len = minOf(WRITE_SEGMENT, bytes.size - off)
+            transfer(bytes, off, len)
+            off += len
+        }
+    }
+
+    private fun transfer(bytes: ByteArray, off: Int, len: Int) {
+        if (closed) throw IOException("USB transport closed")
+        if (io.bulkOut(bytes, off, len) < 0) throw IOException("USB transfer failed")
     }
 
     override suspend fun readFully(n: Int): ByteArray = withContext(Dispatchers.IO) {
