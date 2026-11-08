@@ -14,6 +14,9 @@ import android.view.Surface
  * "scrcpy-decoder-out" thread, which is stopped and joined before any reconfigure or release, so
  * the codec is never stopped under its feet.
  *
+ * [abort] (any thread) makes a blocked input wait return. Errors on the output thread are rethrown
+ * on the input thread, so they end the session as a video error.
+ *
  * [onVideoSize] is called (from the output thread) with the crop-derived size on every
  * INFO_OUTPUT_FORMAT_CHANGED; it is the display-aspect authority.
  */
@@ -28,6 +31,12 @@ class VideoDecoder(
     private var output: OutputDrainer? = null
     private var released = false
 
+    /** Set from any thread by [abort]: the input loop gives up instead of waiting for a buffer. */
+    @Volatile private var aborted = false
+
+    /** First error seen by the output thread; rethrown on the input (video) thread. */
+    @Volatile private var outputFailure: Throwable? = null
+
     override fun onHeader(h: StreamHeader) = configure(h.width, h.height)
 
     override fun onSession(w: Int, h: Int) {
@@ -38,19 +47,35 @@ class VideoDecoder(
     override fun onPacket(p: VideoPacket) {
         val codec = mc ?: return
         if (p.data.isEmpty()) return
+        checkOutput()
         var index: Int
         do {
+            if (aborted) return
             index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
-            // Without a live drainer no input buffer would ever come back: fail instead of hanging.
-            if (index < 0 && output?.isAlive != true) throw IllegalStateException("decoder output stopped")
+            if (index < 0) {
+                checkOutput()
+                // Without a live drainer no input buffer would ever come back: fail instead of hanging.
+                if (output?.isAlive != true) throw IllegalStateException("decoder output stopped")
+            }
         } while (index < 0)
         val buf = codec.getInputBuffer(index) ?: throw IllegalStateException("no input buffer $index")
+        if (p.data.size > buf.capacity()) {
+            throw IllegalStateException("video packet of ${p.data.size} bytes exceeds decoder input buffer (${buf.capacity()})")
+        }
         buf.clear()
         buf.put(p.data)
         var flags = 0
         if (p.isConfig) flags = flags or MediaCodec.BUFFER_FLAG_CODEC_CONFIG
         if (p.isKeyFrame) flags = flags or MediaCodec.BUFFER_FLAG_KEY_FRAME
         codec.queueInputBuffer(index, 0, p.data.size, if (p.isConfig) 0 else p.ptsUs, flags)
+    }
+
+    override fun abort() {
+        aborted = true
+    }
+
+    private fun checkOutput() {
+        outputFailure?.let { throw IllegalStateException("decoder output failed: ${it.message ?: it}", it) }
     }
 
     override fun release() {
@@ -70,6 +95,8 @@ class VideoDecoder(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
+        // Default input buffers can be too small for native-resolution keyframes.
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, maxOf(w * h, MIN_INPUT_SIZE))
         codec.configure(format, surface, null, 0)
         codec.start()
         width = w
@@ -109,8 +136,11 @@ class VideoDecoder(
                         i == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> reportSize(codec.outputFormat)
                     }
                 }
-            } catch (_: IllegalStateException) {
-                // Codec stopped/released or in error; the input side reports failures.
+            } catch (t: Throwable) {
+                // The codec is only stopped after this thread was joined, so anything here is a real
+                // failure (codec error, size callback crash). Never let it escape a raw thread
+                // (that kills the process): hand it to the input side, which ends the session.
+                outputFailure = t
             }
         }
 
@@ -132,6 +162,7 @@ class VideoDecoder(
     private companion object {
         const val INPUT_TIMEOUT_US = 100_000L
         const val OUTPUT_TIMEOUT_US = 10_000L
+        const val MIN_INPUT_SIZE = 1024 * 1024
 
         // MediaFormat.KEY_CROP_* are public only since API 33; the keys exist on all versions.
         const val KEY_CROP_LEFT = "crop-left"

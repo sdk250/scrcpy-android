@@ -40,11 +40,24 @@ interface FrameSink {
     fun onPacket(p: VideoPacket)
 
     fun release()
+
+    /**
+     * Asks a blocked [onPacket] to give up (called from any thread when the session ends), so the
+     * video thread can reach [release]. Default: no-op.
+     */
+    fun abort() {}
 }
 
 sealed class SessionEvent {
-    /** Current video size; emitted for the initial size, every session packet and decoder-reported changes. */
-    data class VideoSize(val w: Int, val h: Int) : SessionEvent()
+    /**
+     * Video geometry. [sessionW]/[sessionH] is the size announced by the server (session packets);
+     * touch events MUST be encoded with it as screenW/screenH (the server drops any other size).
+     * [displayW]/[displayH] is the decoder's crop-derived output size; layout and aspect ratio MUST
+     * use it (it equals the session size until the decoder reports otherwise).
+     * Emitted for the initial size, every session packet and every decoder size change;
+     * identical consecutive events are not repeated.
+     */
+    data class VideoSize(val sessionW: Int, val sessionH: Int, val displayW: Int, val displayH: Int) : SessionEvent()
 
     /** Emitted exactly once, last. [serverLog] is the tail (<= 64 KiB) of the server's shell output. */
     data class Ended(val reason: String, val serverLog: String) : SessionEvent()
@@ -76,16 +89,19 @@ class ScrcpySession(
     private val started = AtomicBoolean(false)
     private val ended = AtomicBoolean(false)
     private val endedEmitted = AtomicBoolean(false)
+    private val released = CompletableDeferred<Unit>()
     private val log = LogBuffer(LOG_LIMIT)
     private val shellDone = CompletableDeferred<Unit>()
     private val outgoing = Channel<ByteArray>(Channel.UNLIMITED)
-    private val sizeLock = Any()
+    /** Guards [ended] transitions and every emission, so nothing can be emitted after Ended. */
+    private val emitLock = Any()
     private var lastSize: SessionEvent.VideoSize? = null
 
     @Volatile private var shell: AdbStream? = null
     @Volatile private var video: AdbStream? = null
     @Volatile private var control: AdbStream? = null
     @Volatile private var startJob: Job? = null
+    @Volatile private var sink: FrameSink? = null
 
     private val videoDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "scrcpy-video").apply { isDaemon = true }
@@ -95,10 +111,13 @@ class ScrcpySession(
      * Pushes/starts the server and connects; returns once video is flowing or the session ended
      * (failures are reported as [SessionEvent.Ended], not thrown). [sinkFactory] gets the codec and
      * a callback for the decoder's output size (e.g. `{ c, cb -> VideoDecoder(surface, c, cb) }`);
-     * it is invoked on the video thread.
+     * it is invoked on the video thread. A no-op if the session was already stopped.
      */
     suspend fun start(sinkFactory: (VideoCodec, (Int, Int) -> Unit) -> FrameSink) {
-        check(started.compareAndSet(false, true)) { "start() may only be called once" }
+        if (!started.compareAndSet(false, true)) {
+            check(ended.get()) { "start() may only be called once" }
+            return
+        }
         var loopLaunched = false
         val job = scope.launch {
             try {
@@ -108,7 +127,10 @@ class ScrcpySession(
             } catch (e: Throwable) {
                 finish(if (conn.closed.value) "connection lost" else (e.message ?: e.toString()))
             } finally {
-                if (!loopLaunched) videoDispatcher.close()
+                if (!loopLaunched) {
+                    videoDispatcher.close()
+                    released.complete(Unit)
+                }
             }
         }
         startJob = job
@@ -129,6 +151,13 @@ class ScrcpySession(
 
     /** Idempotent. Closes all streams; emits `Ended("stopped")` if the session had not ended yet. */
     fun stop() = finish("stopped", waitForServerLog = false)
+
+    /**
+     * Completes once the [FrameSink] has been released and the video thread has exited (or was
+     * never started). [SessionEvent.Ended] may be emitted before that: callers MUST await this
+     * before reusing or destroying the Surface the decoder renders to.
+     */
+    suspend fun awaitReleased() = released.await()
 
     /** Returns true if the video loop was launched (it then owns [videoDispatcher]). */
     private suspend fun connect(sinkFactory: (VideoCodec, (Int, Int) -> Unit) -> FrameSink): Boolean {
@@ -160,7 +189,7 @@ class ScrcpySession(
         scope.launch { drain(c) }
         scope.launch { writeLoop(c) }
 
-        emitSize(header.width, header.height)
+        onSessionSize(header.width, header.height)
         if (ended.get()) return false
         scope.launch(videoDispatcher) { videoLoop(reader, header, sinkFactory) }
         return true
@@ -207,8 +236,13 @@ class ScrcpySession(
         for (msg in outgoing) {
             try {
                 c.write(msg)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IOException) {
                 return // stream/connection gone; ending is detected via the shell or video stream
+            } catch (e: Exception) {
+                finish("control error: ${e.message ?: e}")
+                return
             }
         }
     }
@@ -218,18 +252,18 @@ class ScrcpySession(
         header: StreamHeader,
         sinkFactory: (VideoCodec, (Int, Int) -> Unit) -> FrameSink,
     ) {
-        var sink: FrameSink? = null
         try {
             if (ended.get()) return
             val s = sinkFactory(options.codec) { w, h -> onDecodedSize(w, h) }
             sink = s
+            if (ended.get()) s.abort() // finish() may have run before [sink] was published
             s.onHeader(header)
             while (true) {
                 val p = reader.readPacket() ?: break
                 val meta = p.session
                 if (meta != null) {
                     s.onSession(meta.width, meta.height)
-                    emitSize(meta.width, meta.height)
+                    onSessionSize(meta.width, meta.height)
                 } else {
                     s.onPacket(p)
                 }
@@ -243,25 +277,28 @@ class ScrcpySession(
             } catch (_: Throwable) {
             }
             videoDispatcher.close()
+            released.complete(Unit)
         }
     }
 
-    private fun emitSize(w: Int, h: Int): Unit = synchronized(sizeLock) {
-        if (ended.get()) return
-        val e = SessionEvent.VideoSize(w, h)
-        lastSize = e
-        _events.tryEmit(e)
-        Unit
+    /** New server-side size: display size resets to it until the decoder reports its own. */
+    private fun onSessionSize(w: Int, h: Int) = emitSize(SessionEvent.VideoSize(w, h, w, h))
+
+    /** Decoder output (crop) size: changes only the display fields. */
+    private fun onDecodedSize(w: Int, h: Int) {
+        if (w <= 0 || h <= 0) return
+        synchronized(emitLock) {
+            val cur = lastSize ?: return
+            emitSize(cur.copy(displayW = w, displayH = h))
+        }
     }
 
-    /** Decoder output (crop) size is the display-aspect authority; publish it if it differs. */
-    private fun onDecodedSize(w: Int, h: Int): Unit = synchronized(sizeLock) {
-        if (ended.get() || w <= 0 || h <= 0) return
-        val e = SessionEvent.VideoSize(w, h)
-        if (e == lastSize) return
-        lastSize = e
-        _events.tryEmit(e)
-        Unit
+    private fun emitSize(e: SessionEvent.VideoSize) {
+        synchronized(emitLock) {
+            if (ended.get() || e == lastSize) return
+            lastSize = e
+            _events.tryEmit(e)
+        }
     }
 
     /**
@@ -269,7 +306,15 @@ class ScrcpySession(
      * server is given a short grace period to print its last words before Ended is emitted.
      */
     private fun finish(reason: String, waitForServerLog: Boolean = true) {
-        if (!ended.compareAndSet(false, true)) return
+        synchronized(emitLock) {
+            if (!ended.compareAndSet(false, true)) return
+        }
+        sink?.abort()
+        if (started.compareAndSet(false, true)) {
+            // start() was never called: nothing will ever use the video thread.
+            videoDispatcher.close()
+            released.complete(Unit)
+        }
         startJob?.cancel()
         outgoing.close()
         video?.close()
@@ -290,7 +335,7 @@ class ScrcpySession(
     private fun emitEnded(reason: String) {
         if (!endedEmitted.compareAndSet(false, true)) return
         shell?.close()
-        _events.tryEmit(SessionEvent.Ended(reason, log.text()))
+        synchronized(emitLock) { _events.tryEmit(SessionEvent.Ended(reason, log.text())) }
     }
 
     /** Keeps the last [limit] bytes appended. */

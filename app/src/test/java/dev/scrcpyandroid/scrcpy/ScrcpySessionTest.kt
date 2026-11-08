@@ -46,7 +46,10 @@ class ScrcpySessionTest {
         override fun onSession(w: Int, h: Int) { calls += "session ${w}x$h" }
         override fun onPacket(p: VideoPacket) { calls += "packet ${p.data.size}" }
         override fun release() { calls += "release" }
+        override fun abort() { calls += "abort" }
     }
+
+    private fun size(w: Int, h: Int, dw: Int = w, dh: Int = h) = SessionEvent.VideoSize(w, h, dw, dh)
 
     /** Device-side script helpers on top of [FakeAdbd]. */
     private class Device(val peer: FakeAdbd) {
@@ -169,7 +172,7 @@ class ScrcpySessionTest {
         dev.serveShell()
         dev.serveSockets() // first open refused, second = video, third = control
         started.await()
-        assertEquals(SessionEvent.VideoSize(1920, 1080), s.events.first())
+        assertEquals(size(1920, 1080), s.events.first())
         s.stop()
     }
 
@@ -201,6 +204,7 @@ class ScrcpySessionTest {
         assertEquals("server exited", ended.reason)
         assertTrue(ended.serverLog, ended.serverLog.contains("ERROR: xyz"))
         started.await()
+        s.awaitReleased() // video thread never started
     }
 
     @Test
@@ -214,7 +218,7 @@ class ScrcpySessionTest {
         val (video, _) = dev.serveSockets()
         started.await()
         dev.write(video.first, video.second, sessionPacket(1080, 1920))
-        s.events.first { it == SessionEvent.VideoSize(1080, 1920) }
+        s.events.first { it == size(1080, 1920) }
         assertEquals(listOf("header 1920x1080", "session 1080x1920"), sink.calls.toList())
         s.stop()
     }
@@ -252,5 +256,75 @@ class ScrcpySessionTest {
         testScheduler.advanceUntilIdle()
         assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), ends)
         collector.cancel()
+    }
+
+    @Test
+    fun decoderSizeChangesDisplayOnlyAndDuplicatesAreDropped() = runTest {
+        val (dev, conn) = connected()
+        val s = session(conn)
+        var decoded: ((Int, Int) -> Unit)? = null
+        val started = async { s.start { _, cb -> decoded = cb; RecordingSink() } }
+        dev.serveUpToDateStat()
+        dev.serveShell()
+        val (video, _) = dev.serveSockets()
+        started.await()
+        val events: MutableList<SessionEvent> = Collections.synchronizedList(mutableListOf())
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            s.events.collect { events += it }
+        }
+        // The video thread created the sink (and so set the callback) before reading the session packet.
+        dev.write(video.first, video.second, sessionPacket(1920, 1080)) // same as header -> deduped
+        dev.write(video.first, video.second, sessionPacket(1080, 1920))
+        s.events.first { it == size(1080, 1920) }
+        decoded!!(1080, 1904)
+        decoded!!(1080, 1904) // duplicate
+        dev.write(video.first, video.second, sessionPacket(1080, 1920)) // resets display to session size
+        dev.write(video.first, video.second, sessionPacket(1080, 1920)) // duplicate
+        dev.write(video.first, video.second, sessionPacket(500, 1000))
+        s.events.first { it == size(500, 1000) }
+        assertEquals(
+            listOf(
+                size(1920, 1080),
+                size(1080, 1920),
+                size(1080, 1920, 1080, 1904),
+                size(1080, 1920),
+                size(500, 1000),
+            ),
+            events.toList(),
+        )
+        collector.cancel()
+        s.stop()
+    }
+
+    @Test
+    fun nothingIsEmittedAfterEndedAndReleaseIsAwaitable() = runTest {
+        val (dev, conn) = connected()
+        val s = session(conn)
+        val sink = RecordingSink()
+        var decoded: ((Int, Int) -> Unit)? = null
+        val started = async { s.start { _, cb -> decoded = cb; sink } }
+        dev.serveUpToDateStat()
+        dev.serveShell()
+        val (video, _) = dev.serveSockets()
+        started.await()
+        dev.write(video.first, video.second, sessionPacket(1080, 1920))
+        s.events.first { it == size(1080, 1920) } // sink exists, callback captured
+        s.stop()
+        decoded!!(640, 480) // late decoder callback must not overwrite Ended
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+        s.awaitReleased()
+        assertEquals("release", sink.calls.last())
+        assertTrue(sink.calls.toString(), sink.calls.contains("abort"))
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+    }
+
+    @Test
+    fun stopBeforeStartReleasesAndStartIsNoOp() = runTest {
+        val (_, conn) = connected()
+        val s = session(conn)
+        s.stop()
+        s.awaitReleased()
+        s.start { _, _ -> error("must not create a sink") }
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
     }
 }
