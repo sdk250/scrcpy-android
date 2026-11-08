@@ -160,3 +160,14 @@ class AdbKeyPair(
         }
     }
 }
+
+/** MD5 of the decoded Android public-key struct as lowercase hex pairs joined by ':' (like adb's fingerprint). */
+fun AdbKeyPair.fingerprint(): String {
+    val struct = Base64.getDecoder().decode(exportPublic().substringBefore(' '))
+    return java.security.MessageDigest.getInstance("MD5").digest(struct)
+        .joinToString(":") { "%02x".format(it.toInt() and 0xFF) }
+}
+
+/** Strips CR/LF and trims; blank input keeps [previous] (a newline would corrupt the public-key payload). */
+fun sanitizeComment(input: String, previous: String): String =
+    input.replace("\r", "").replace("\n", "").trim().ifEmpty { previous }

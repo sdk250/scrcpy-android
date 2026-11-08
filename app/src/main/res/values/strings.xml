@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">scrcpy-android</string>
+    <string name="back">返回</string>
+    <string name="ok">确定</string>
+    <string name="cancel">取消</string>
+
+    <string name="settings">设置</string>
+    <string name="adb_connect">adb connect</string>
+    <string name="no_devices">没有设备。用 USB 连接设备，或点击右下角按钮通过网络连接。</string>
+    <string name="tag_usb">USB</string>
+    <string name="tag_tcp">TCP</string>
+    <string name="state_device">已连接</string>
+    <string name="state_unauthorized">未授权</string>
+    <string name="state_offline">离线</string>
+    <string name="state_connecting">连接中</string>
+    <string name="unauthorized_hint">请在被控设备上点“允许 USB 调试”</string>
+    <string name="menu_disconnect">断开</string>
+    <string name="menu_forget">删除</string>
+
+    <string name="connect_title">连接设备</string>
+    <string name="connect_hint">IP[:端口]</string>
+    <string name="connect_invalid">地址格式不正确</string>
+    <string name="connect_action">连接</string>
+
+    <string name="settings_title">设置</string>
+    <string name="setting_max_size">最大分辨率</string>
+    <string name="setting_bitrate">码率</string>
+    <string name="setting_fps">最高帧率</string>
+    <string name="setting_codec">编码</string>
+    <string name="setting_screen_off">投屏时熄屏</string>
+    <string name="native_size">原始</string>
+    <string name="unit_mbps">%1$d Mbps</string>
+    <string name="unit_fps">%1$d fps</string>
+    <string name="codec_h264">H.264</string>
+    <string name="codec_h265">H.265</string>
+    <string name="codec_h265_unsupported">H.265（本机不支持）</string>
+    <string name="key_management">密钥管理</string>
+
+    <string name="key_title">密钥管理</string>
+    <string name="key_fingerprint">公钥指纹</string>
+    <string name="key_comment">注释</string>
+    <string name="key_save_comment">保存注释</string>
+    <string name="key_comment_saved">注释已保存</string>
+    <string name="key_import">导入私钥</string>
+    <string name="key_export_private">导出私钥</string>
+    <string name="key_export_public">导出公钥</string>
+    <string name="key_regenerate">重新生成</string>
+    <string name="key_regenerate_confirm">重新生成密钥后，已授权的设备需要重新授权。确定继续吗？</string>
+    <string name="key_changed_note">密钥已更换。已连接的设备不受影响，新密钥将在下次连接时生效。</string>
+    <string name="key_imported">密钥已导入</string>
+    <string name="key_regenerated">密钥已重新生成</string>
+    <string name="key_exported">已导出</string>
+    <string name="key_import_failed">导入失败：%1$s</string>
+    <string name="key_export_failed">导出失败：%1$s</string>
+    <string name="key_error_generic">操作失败：%1$s</string>
+    <string name="key_loading">正在加载…</string>
+</resources>
