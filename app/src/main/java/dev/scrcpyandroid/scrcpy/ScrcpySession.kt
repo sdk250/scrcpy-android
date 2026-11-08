@@ -20,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -78,6 +79,7 @@ class ScrcpySession(
     private val serverBytes: () -> ByteArray,
     private val scope: CoroutineScope,
     private val scid: Int = Random.nextInt() and 0x7FFFFFFF,
+    private val videoTimeoutMs: Long = DEFAULT_VIDEO_TIMEOUT_MS,
 ) {
     private val _events = MutableSharedFlow<SessionEvent>(
         replay = 1,
@@ -106,6 +108,10 @@ class ScrcpySession(
     @Volatile private var control: AdbStream? = null
     @Volatile private var startJob: Job? = null
     @Volatile private var sink: FrameSink? = null
+    @Volatile private var watchdogJob: Job? = null
+
+    /** Signalled by the video thread for every packet read; consumed by [watchVideo]. */
+    private val videoActivity = Channel<Unit>(Channel.CONFLATED)
 
     private val videoDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "scrcpy-video").apply { isDaemon = true }
@@ -201,6 +207,10 @@ class ScrcpySession(
         videoLaunched = true
         // If the job is cancelled before its body runs, the finally in videoLoop never executes.
         videoJob.invokeOnCompletion { releaseVideo() }
+        if (videoTimeoutMs > 0) {
+            watchdogJob = scope.launch { watchVideo() }
+            if (ended.get()) watchdogJob?.cancel()
+        }
     }
 
     /** Publishes [s] via [set]; if the session ended meanwhile, closes it and aborts. */
@@ -226,6 +236,22 @@ class ScrcpySession(
         throw IOException("could not connect to the scrcpy server socket", last)
     }
 
+    /**
+     * Spec 6.9: a dropped network (no TCP reset) would otherwise go unnoticed forever. The server
+     * keeps the stream alive on a static screen (SurfaceEncoder sets
+     * KEY_REPEAT_PREVIOUS_FRAME_AFTER = 100 ms), so [videoTimeoutMs] without any packet means the
+     * link is dead: close the ADB connection (the registry then marks the device OFFLINE).
+     */
+    private suspend fun watchVideo() {
+        while (!ended.get()) {
+            if (withTimeoutOrNull(videoTimeoutMs) { videoActivity.receive() } == null) {
+                finish("连接已断开 (超过 ${videoTimeoutMs / 1000} 秒未收到视频数据)")
+                conn.close()
+                return
+            }
+        }
+    }
+
     private suspend fun collectLog(sh: AdbStream) {
         try {
             while (true) log.append(sh.read() ?: break)
@@ -240,10 +266,29 @@ class ScrcpySession(
         while (c.read() != null) Unit
     }
 
+    /**
+     * Single control writer. Each WRTE waits for the device's OKAY (one round trip), so everything
+     * queued meanwhile is sent as one write (up to [AdbConnection.maxPayload]) instead of letting
+     * high-rate input (multi-touch MOVE) pile up behind one round trip per message.
+     */
     private suspend fun writeLoop(c: AdbStream) {
-        for (msg in outgoing) {
+        var carry: ByteArray? = null
+        val batch = ByteArrayOutputStream()
+        while (true) {
+            val first = carry ?: outgoing.receiveCatching().getOrNull() ?: return
+            carry = null
+            batch.reset()
+            batch.write(first)
+            while (batch.size() < conn.maxPayload) {
+                val next = outgoing.tryReceive().getOrNull() ?: break
+                if (batch.size() + next.size > conn.maxPayload) {
+                    carry = next
+                    break
+                }
+                batch.write(next)
+            }
             try {
-                c.write(msg)
+                c.write(batch.toByteArray())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -268,6 +313,7 @@ class ScrcpySession(
             s.onHeader(header)
             while (true) {
                 val p = reader.readPacket() ?: break
+                videoActivity.trySend(Unit)
                 val meta = p.session
                 if (meta != null) {
                     s.onSession(meta.width, meta.height)
@@ -332,6 +378,7 @@ class ScrcpySession(
             releaseVideo()
         }
         startJob?.cancel()
+        watchdogJob?.cancel()
         outgoing.close()
         video?.close()
         control?.close()
@@ -373,6 +420,7 @@ class ScrcpySession(
         private const val SOCKET_ATTEMPTS = 50
         private const val SOCKET_RETRY_MS = 100L
         private const val SHELL_GRACE_MS = 1000L
+        const val DEFAULT_VIDEO_TIMEOUT_MS = 5000L
 
         fun serverMtime(version: String): Int = (version.hashCode() and 0x7FFFFFFF)
     }

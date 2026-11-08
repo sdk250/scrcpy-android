@@ -16,9 +16,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
@@ -41,6 +43,18 @@ class ScrcpySessionTest {
         ByteBuffer.allocate(4 * v.size).also { b -> v.forEach { b.putInt(it) } }.array()
 
     private fun sessionPacket(w: Int, h: Int) = be(0x80000000.toInt(), w, h)
+
+    private fun mediaPacket(size: Int): ByteArray =
+        ByteBuffer.allocate(12 + size).putLong(1000L).putInt(size).put(ByteArray(size) { 7 }).array()
+
+    /** Blocks (without letting virtual time advance) until [cond] holds; the video thread is real. */
+    private fun waitFor(cond: () -> Boolean) {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (!cond()) {
+            check(System.nanoTime() < deadline) { "condition not met in time" }
+            Thread.sleep(5)
+        }
+    }
 
     /** Device meta + codec id + first session packet (everything after the dummy byte). */
     private fun videoMeta(codecId: Int = VideoCodec.H264.id, w: Int = 1920, h: Int = 1080): ByteArray =
@@ -110,8 +124,12 @@ class ScrcpySessionTest {
         return Device(peer) to c.await()
     }
 
-    private fun TestScope.session(conn: AdbConnection, o: ScrcpyOptions = ScrcpyOptions()) =
-        ScrcpySession(conn, o, version, { server }, backgroundScope, scid = scid)
+    /**
+     * The inactivity watchdog runs on virtual time, which runTest fast-forwards whenever the test
+     * waits for the (real) video thread, so it is off unless a test asks for it.
+     */
+    private fun TestScope.session(conn: AdbConnection, o: ScrcpyOptions = ScrcpyOptions(), videoTimeoutMs: Long = 0) =
+        ScrcpySession(conn, o, version, { server }, backgroundScope, scid = scid, videoTimeoutMs = videoTimeoutMs)
 
     private suspend fun Device.serveStat(mode: Int, size: Int, mtime: Int) {
         val (l, r) = accept("sync:")
@@ -206,6 +224,63 @@ class ScrcpySessionTest {
         started.await()
         assertEquals(size(720, 1280), s.events.first())
         s.stop()
+    }
+
+    @Test
+    fun queuedControlMessagesAreCoalescedIntoOneWrite() = runTest {
+        val (dev, conn) = connected()
+        val s = session(conn)
+        val started = async { s.start { _, _ -> RecordingSink() } }
+        dev.serveUpToDateStat()
+        dev.serveShell()
+        val (_, control) = dev.serveSockets()
+        started.await()
+        val msgs = (1..4).map { i -> ByteArray(10 * i) { (i * 16 + it).toByte() } }
+        val isControlWrite = { m: AdbMessage -> m.command == Adb.WRTE && m.arg0 == control.first }
+        s.send(msgs[0])
+        assertArrayEquals(msgs[0], dev.next(isControlWrite).payload)
+        // OKAY withheld: the writer waits while more messages queue up.
+        s.send(msgs[1])
+        s.send(msgs[2])
+        s.send(msgs[3])
+        runCurrent()
+        dev.peer.send(Adb.OKAY, control.second, control.first)
+        assertArrayEquals(msgs[1] + msgs[2] + msgs[3], dev.next(isControlWrite).payload)
+        s.stop()
+    }
+
+    @Test
+    fun videoInactivityClosesConnectionAndEnds() = runTest(timeout = 10.seconds) {
+        val (dev, conn) = connected()
+        val s = session(conn, videoTimeoutMs = 5000)
+        val sink = RecordingSink()
+        val started = async { s.start { _, _ -> sink } }
+        dev.serveUpToDateStat()
+        dev.serveShell()
+        val (video, _) = dev.serveSockets()
+        started.await()
+        val isEnded = { s.events.replayCache.any { it is SessionEvent.Ended } }
+
+        testScheduler.advanceTimeBy(4000)
+        runCurrent()
+        assertFalse(isEnded())
+        // A packet re-arms the watchdog.
+        dev.write(video.first, video.second, mediaPacket(10))
+        runCurrent() // client read loop hands the WRTE to the video stream
+        waitFor { sink.calls.contains("packet 10") }
+        runCurrent() // watchdog sees the activity
+        testScheduler.advanceTimeBy(4000)
+        runCurrent()
+        assertFalse(isEnded())
+        assertFalse(conn.closed.value)
+
+        // Then the stream goes silent (e.g. Wi-Fi dropped without a TCP reset).
+        testScheduler.advanceTimeBy(1500)
+        runCurrent()
+        val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
+        assertEquals("连接已断开 (超过 5 秒未收到视频数据)", ended.reason)
+        assertTrue(conn.closed.value)
+        s.awaitReleased()
     }
 
     @Test
