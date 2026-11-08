@@ -14,7 +14,10 @@ class AdbKeyStore(private val dir: File) {
                 val comment = if (commentFile.isFile) commentFile.readText().trim() else ""
                 return AdbKeyPair.importPem(keyFile.readText(), comment.ifEmpty { DEFAULT_COMMENT })
             } catch (_: InvalidKeyFormatException) {
-                // Corrupt key file: fall through and create a fresh key.
+                // Keep the unreadable file for recovery, then create a fresh key.
+                val corrupt = File(dir, "adbkey.corrupt")
+                corrupt.delete()
+                if (!keyFile.renameTo(corrupt)) keyFile.copyTo(corrupt, overwrite = true)
             }
         }
         val key = AdbKeyPair.generate()

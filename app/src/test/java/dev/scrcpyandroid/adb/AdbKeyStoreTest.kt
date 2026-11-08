@@ -33,4 +33,14 @@ class AdbKeyStoreTest {
         assertThrows(InvalidKeyFormatException::class.java) { AdbKeyPair.importPem("hello", "x") }
         assertEquals(k1.public.modulus, store.loadOrCreate().public.modulus)
     }
+
+    @Test
+    fun corruptKeyIsPreservedAndReplaced() {
+        val dir = tmp.newFolder("k3")
+        File(dir, "adbkey").writeText("garbage")
+        val k = AdbKeyStore(dir).loadOrCreate()
+        assertEquals(2048, k.public.modulus.bitLength())
+        assertEquals("garbage", File(dir, "adbkey.corrupt").readText())
+        assertEquals(k.public.modulus, AdbKeyStore(dir).loadOrCreate().public.modulus)
+    }
 }

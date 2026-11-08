@@ -95,6 +95,15 @@ class AdbKeyTest {
     }
 
     @Test
+    fun importRejectsNon2048BitKey() {
+        val kp = KeyPairGenerator.getInstance("RSA").apply { initialize(1024) }.generateKeyPair()
+        val b64 = Base64.getEncoder().encodeToString(kp.private.encoded)
+        val pem = "-----BEGIN PRIVATE KEY-----\n$b64\n-----END PRIVATE KEY-----"
+        val e = assertThrows(InvalidKeyFormatException::class.java) { AdbKeyPair.importPem(pem, "x") }
+        assertTrue(e.message!!.contains("2048"))
+    }
+
+    @Test
     fun importRejectsBadBase64AndDer() {
         assertThrows(InvalidKeyFormatException::class.java) {
             AdbKeyPair.importPem("-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----", "x")

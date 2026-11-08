@@ -80,6 +80,9 @@ class AdbKeyPair(
                 if (priv !is RSAPrivateCrtKey) {
                     throw InvalidKeyFormatException("Not an RSA private key with CRT parameters")
                 }
+                if (priv.modulus.bitLength() != 2048) {
+                    throw InvalidKeyFormatException("only 2048-bit RSA keys are supported")
+                }
                 val pub = KeyFactory.getInstance("RSA")
                     .generatePublic(RSAPublicKeySpec(priv.modulus, priv.publicExponent)) as RSAPublicKey
                 return AdbKeyPair(priv, pub, comment)
