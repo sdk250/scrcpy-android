@@ -107,4 +107,22 @@ class FakeAdbd(val transport: FakeTransport = FakeTransport()) {
         expect(Adb.CNXN)
         send(Adb.CNXN, Adb.VERSION, maxPayload, banner.toByteArray() + 0.toByte())
     }
+
+    /** Reads the client's OPEN, checks the service, answers OKAY. Returns (clientLocalId, deviceRemoteId). */
+    suspend fun acceptOpen(service: String, remoteId: Int = 77): Pair<Int, Int> {
+        val open = expect(Adb.OPEN)
+        check(String(open.payload) == "$service\u0000") { "unexpected service ${String(open.payload)}" }
+        send(Adb.OKAY, remoteId, open.arg0)
+        return open.arg0 to remoteId
+    }
+
+    /** Collects client WRTE payloads (answering OKAY to each) until at least [size] bytes arrived. */
+    suspend fun readStreamData(local: Int, remote: Int, size: Int): ByteArray {
+        var out = ByteArray(0)
+        while (out.size < size) {
+            out += expect(Adb.WRTE).payload
+            send(Adb.OKAY, remote, local)
+        }
+        return out
+    }
 }
