@@ -29,6 +29,7 @@ import dev.scrcpyandroid.scrcpy.TouchMapper
 import dev.scrcpyandroid.scrcpy.VideoDecoder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,6 +82,16 @@ class MirrorActivity : ComponentActivity() {
                         finish()
                     },
                     onFinish = ::finish,
+                    onSurfaceDestroyed = {
+                        if (isChangingConfigurations) {
+                            // Recreation for a config change not listed in the manifest: the
+                            // retained ViewModel restarts the session on the new surface.
+                            vm.detachForRecreation()
+                        } else {
+                            vm.onSurfaceDestroyed()
+                            finish()
+                        }
+                    },
                 )
             }
         }
@@ -110,6 +121,7 @@ class MirrorViewModel(private val app: App, private val deviceId: String) : View
 
     private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var session: ScrcpySession? = null
+    private var eventsJob: Job? = null
 
     /** Set before any user-initiated stop, so its Ended event shows no dialog. */
     @Volatile private var userStopped = false
@@ -145,7 +157,7 @@ class MirrorViewModel(private val app: App, private val deviceId: String) : View
         )
         session = s
         // viewModelScope runs on Dispatchers.Main.immediate: all UI state changes on the main thread.
-        viewModelScope.launch { s.events.collect(::onEvent) }
+        eventsJob = viewModelScope.launch { s.events.collect(::onEvent) }
         sessionScope.launch { s.start { codec, onSize -> VideoDecoder(surface, codec, onSize) } }
     }
 
@@ -155,7 +167,25 @@ class MirrorViewModel(private val app: App, private val deviceId: String) : View
      */
     fun onSurfaceDestroyed() {
         stopByUser()
+        session?.let(::awaitReleasedBlocking)
+    }
+
+    /**
+     * Main thread, from surfaceDestroyed while the activity is being recreated: the current session
+     * (bound to the dying surface) is stopped silently and forgotten, so the next
+     * [onSurfaceCreated] — from the recreated activity — starts a fresh one instead of leaving a
+     * black screen.
+     */
+    fun detachForRecreation() {
         val s = session ?: return
+        eventsJob?.cancel() // its Ended("stopped") must not show a dialog
+        eventsJob = null
+        s.stop()
+        awaitReleasedBlocking(s)
+        session = null
+    }
+
+    private fun awaitReleasedBlocking(s: ScrcpySession) {
         runBlocking { withTimeoutOrNull(RELEASE_TIMEOUT_MS) { s.awaitReleased() } }
     }
 

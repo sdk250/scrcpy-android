@@ -46,11 +46,18 @@ private const val KEYCODE_BACK = 4
 /**
  * Fullscreen mirror: black background, the video SurfaceView fitted (never stretched) inside it,
  * a touch layer over the whole area, the key bar and an invisible [RemoteInputView].
- * [onFinish] closes the screen (the caller finishes the activity).
+ * [onFinish] closes the screen (the caller finishes the activity). [onSurfaceDestroyed] runs on the
+ * main thread from SurfaceHolder.Callback.surfaceDestroyed and must not return before the decoder
+ * has let go of the surface.
  */
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun MirrorScreen(vm: MirrorViewModel, onExit: () -> Unit, onFinish: () -> Unit) {
+fun MirrorScreen(
+    vm: MirrorViewModel,
+    onExit: () -> Unit,
+    onFinish: () -> Unit,
+    onSurfaceDestroyed: () -> Unit,
+) {
     val size by vm.videoSize.collectAsStateWithLifecycle()
     val ended by vm.ended.collectAsStateWithLifecycle()
     val missing by vm.missingDevice.collectAsStateWithLifecycle()
@@ -90,10 +97,7 @@ fun MirrorScreen(vm: MirrorViewModel, onExit: () -> Unit, onFinish: () -> Unit) 
                     holder.addCallback(object : SurfaceHolder.Callback {
                         override fun surfaceCreated(holder: SurfaceHolder) = vm.onSurfaceCreated(holder.surface)
                         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            vm.onSurfaceDestroyed()
-                            onFinish()
-                        }
+                        override fun surfaceDestroyed(holder: SurfaceHolder) = onSurfaceDestroyed()
                     })
                 }
             },
