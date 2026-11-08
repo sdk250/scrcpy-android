@@ -13,6 +13,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AdbConnectionTest {
@@ -183,6 +184,29 @@ class AdbConnectionTest {
         conn.close()
         assertTrue(opening.await().isFailure)
         assertTrue(conn.closed.value)
+    }
+
+    @Test
+    fun okayOrWrteForUnknownLocalIdIsAnsweredWithClse() = runTest(timeout = 10.seconds) {
+        val (peer, conn) = connected()
+        val opening = async { conn.open("shell:x") }
+        val open = peer.expect(Adb.OPEN)
+        opening.cancel() // e.g. the session was stopped while the open was pending
+        runCurrent()
+        // Late OKAY for the forgotten stream: the device-side socket must not leak.
+        peer.send(Adb.OKAY, 42, open.arg0)
+        val c1 = peer.expect(Adb.CLSE)
+        assertEquals(0, c1.arg0)
+        assertEquals(42, c1.arg1)
+        peer.send(Adb.WRTE, 43, 999, "x".toByteArray())
+        val c2 = peer.expect(Adb.CLSE)
+        assertEquals(0, c2.arg0)
+        assertEquals(43, c2.arg1)
+        // A CLSE for an unknown id is not answered (no CLSE ping-pong).
+        peer.send(Adb.CLSE, 44, 998)
+        runCurrent()
+        assertFalse(peer.hasPendingBytes())
+        assertFalse(conn.closed.value)
     }
 
     // --- helpers ---

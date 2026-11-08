@@ -417,7 +417,8 @@ class ScrcpySession(
 
     companion object {
         private const val LOG_LIMIT = 64 * 1024
-        private const val SOCKET_ATTEMPTS = 50
+        // 100 x 100 ms = 10 s, the official client's budget: old devices start the server slowly.
+        private const val SOCKET_ATTEMPTS = 100
         private const val SOCKET_RETRY_MS = 100L
         private const val SHELL_GRACE_MS = 1000L
         const val DEFAULT_VIDEO_TIMEOUT_MS = 5000L

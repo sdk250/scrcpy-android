@@ -94,7 +94,15 @@ class AdbConnection private constructor(
     }
 
     private suspend fun dispatch(msg: AdbMessage) {
-        val stream = streams[msg.arg1] ?: return
+        val stream = streams[msg.arg1]
+        if (stream == null) {
+            // Unknown/forgotten local id (e.g. a late OKAY after a cancelled open): like adb, close
+            // the device-side socket so it does not leak. A CLSE is never answered (no ping-pong).
+            if ((msg.command == Adb.OKAY || msg.command == Adb.WRTE) && msg.arg0 != 0) {
+                send(AdbMessage(Adb.CLSE, 0, msg.arg0))
+            }
+            return
+        }
         when (msg.command) {
             Adb.OKAY -> stream.onOkay(msg.arg0)
             // The OKAY is deferred until the consumer takes the chunk (flow control).

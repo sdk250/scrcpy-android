@@ -2,6 +2,7 @@ package dev.scrcpyandroid.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -20,6 +21,9 @@ import dev.scrcpyandroid.App
 private enum class Screen { LIST, SETTINGS, KEYS }
 
 class MainActivity : ComponentActivity() {
+    /** Debounces double taps on a DEVICE row, which would otherwise start two mirror activities. */
+    private var lastMirrorAt = 0L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -34,9 +38,7 @@ class MainActivity : ComponentActivity() {
                     Screen.LIST -> DeviceListScreen(
                         registry = app.registry,
                         onOpenSettings = { screen = Screen.SETTINGS },
-                        onMirror = { id ->
-                            startActivity(Intent(this, MirrorActivity::class.java).putExtra("deviceId", id))
-                        },
+                        onMirror = ::openMirror,
                     )
                     Screen.SETTINGS -> SettingsScreen(
                         repo = app.settings,
@@ -50,6 +52,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun openMirror(id: String) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastMirrorAt < MIRROR_DEBOUNCE_MS) return
+        lastMirrorAt = now
+        startActivity(Intent(this, MirrorActivity::class.java).putExtra(MirrorActivity.EXTRA_DEVICE_ID, id))
+    }
+
+    /**
+     * singleTask: USB_DEVICE_ATTACHED (manifest filter) is delivered here instead of stacking
+     * another list. Nothing to do: [dev.scrcpyandroid.devices.UsbMonitor] handles the attach.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
+    private companion object {
+        const val MIRROR_DEBOUNCE_MS = 1000L
     }
 }
 
