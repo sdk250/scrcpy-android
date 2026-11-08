@@ -51,6 +51,7 @@ class TcpTransport private constructor(
                 val socket = Socket()
                 try {
                     socket.tcpNoDelay = true
+                    socket.keepAlive = true
                     socket.connect(InetSocketAddress(host, port), timeoutMs)
                 } catch (e: Throwable) {
                     try {
