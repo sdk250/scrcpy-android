@@ -176,19 +176,21 @@ class ScrcpySession(
         val sh = adopt(conn.shell(ServerCommand.build(version, scid, options))) { shell = it }
         scope.launch { collectLog(sh) }
 
+        // Forward-mode order (v5.0.1 DesktopConnection.open/Server.java, official client
+        // server.c): the server accepts video, writes only the dummy byte, then blocks accepting
+        // control; device meta is written only after both sockets are connected and codec meta
+        // later from the encoder thread. So all sockets must be open before reading the header.
         val service = "localabstract:" + ServerCommand.socketName(scid)
         val v = adopt(openWithRetry(service)) { video = it }
         val reader = VideoStreamReader(v.asInputStream())
-        val header = withContext(videoDispatcher) {
-            reader.readDummyByte()
-            reader.readHeader()
-        }
+        withContext(videoDispatcher) { reader.readDummyByte() }
+        val c = adopt(openWithRetry(service)) { control = it }
+        val header = withContext(videoDispatcher) { reader.readHeader() }
         if (header.codecId != options.codec.id) {
             finish("unexpected codec 0x%08x (requested %s)".format(header.codecId, options.codec.arg))
             return
         }
 
-        val c = adopt(conn.open(service)) { control = it }
         if (options.turnScreenOff) c.write(ControlMessages.setDisplayPower(false))
         scope.launch { drain(c) }
         scope.launch { writeLoop(c) }

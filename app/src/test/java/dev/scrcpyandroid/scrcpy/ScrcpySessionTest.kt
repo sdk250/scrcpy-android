@@ -24,6 +24,7 @@ import org.junit.Test
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ScrcpySessionTest {
@@ -41,8 +42,9 @@ class ScrcpySessionTest {
 
     private fun sessionPacket(w: Int, h: Int) = be(0x80000000.toInt(), w, h)
 
-    private fun videoHeader(codecId: Int = VideoCodec.H264.id, w: Int = 1920, h: Int = 1080): ByteArray =
-        byteArrayOf(0) + "Pixel".toByteArray().copyOf(64) + be(codecId) + sessionPacket(w, h)
+    /** Device meta + codec id + first session packet (everything after the dummy byte). */
+    private fun videoMeta(codecId: Int = VideoCodec.H264.id, w: Int = 1920, h: Int = 1080): ByteArray =
+        "Pixel".toByteArray().copyOf(64) + be(codecId) + sessionPacket(w, h)
 
     /** Records FrameSink calls (called from the video thread). */
     private class RecordingSink : FrameSink {
@@ -124,12 +126,17 @@ class ScrcpySessionTest {
     private suspend fun Device.serveShell(o: ScrcpyOptions = ScrcpyOptions()) =
         accept("shell:" + ServerCommand.build(version, scid, o))
 
-    /** Video socket (first refused), header, then control socket. Returns control (local, remote). */
-    private suspend fun Device.serveSockets(): Pair<Pair<Int, Int>, Pair<Int, Int>> {
+    /**
+     * Real v5.0.1 forward-mode order (DesktopConnection.open + Server.java): first OPEN refused
+     * (server not listening yet), accept video, write ONLY the dummy byte, accept control, and only
+     * then write device meta, codec id and the first session packet. Returns (video, control).
+     */
+    private suspend fun Device.serveSockets(meta: ByteArray = videoMeta()): Pair<Pair<Int, Int>, Pair<Int, Int>> {
         refuse(socket)
         val video = accept(socket)
-        write(video.first, video.second, videoHeader())
+        write(video.first, video.second, byteArrayOf(0))
         val control = accept(socket)
+        write(video.first, video.second, meta)
         return video to control
     }
 
@@ -178,6 +185,26 @@ class ScrcpySessionTest {
         dev.serveSockets() // first open refused, second = video, third = control
         started.await()
         assertEquals(size(1920, 1080), s.events.first())
+        s.stop()
+    }
+
+    @Test
+    fun opensControlSocketBeforeAnyMetaIsWritten() = runTest(timeout = 10.seconds) {
+        val (dev, conn) = connected()
+        val s = session(conn)
+        val sink = RecordingSink()
+        val started = async { s.start { _, _ -> sink } }
+        dev.serveUpToDateStat()
+        dev.serveShell()
+        dev.refuse(socket)
+        val video = dev.accept(socket)
+        dev.write(video.first, video.second, byteArrayOf(0))
+        // The server blocks in accept() for control before writing any meta: the client must open
+        // the control socket having seen only the dummy byte (old code hung here).
+        dev.accept(socket)
+        dev.write(video.first, video.second, videoMeta(w = 720, h = 1280))
+        started.await()
+        assertEquals(size(720, 1280), s.events.first())
         s.stop()
     }
 
@@ -235,8 +262,7 @@ class ScrcpySessionTest {
         val started = async { s.start { _, _ -> RecordingSink() } }
         dev.serveUpToDateStat()
         dev.serveShell()
-        val video = dev.accept(socket)
-        dev.write(video.first, video.second, videoHeader(codecId = VideoCodec.H265.id))
+        dev.serveSockets(videoMeta(codecId = VideoCodec.H265.id))
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
         assertTrue(ended.reason, ended.reason.startsWith("unexpected codec"))
         started.await()
