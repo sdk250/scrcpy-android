@@ -65,8 +65,8 @@ class DeviceRegistry(
     }
 
     /**
-     * Connects [id] over [transport]. [retry] (USB) is what [retry] runs once the entry is
-     * OFFLINE again (connection lost, opening failed, disconnected).
+     * Connects [id] over [transport]. [retry] (USB) is the action [DeviceRegistry.retry] runs when
+     * the user taps the entry after it went OFFLINE (connection lost, open failed, disconnected).
      */
     fun attach(id: String, kind: LinkKind, retry: (() -> Unit)? = null, transport: suspend () -> AdbTransport) {
         synchronized(lock) {
@@ -79,7 +79,7 @@ class DeviceRegistry(
 
     /**
      * A plugged-in USB device that cannot be used yet (e.g. USB permission denied): listed as
-     * OFFLINE with [error]; tapping it runs [retry] via [retry].
+     * OFFLINE with [error]; tapping it runs [retry] (via [DeviceRegistry.retry]).
      */
     fun usbUnavailable(id: String, error: String, retry: () -> Unit) {
         synchronized(lock) {
