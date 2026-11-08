@@ -10,7 +10,7 @@ class ServerCommandTest {
         assertEquals(
             "CLASSPATH=/data/local/tmp/scrcpy-server.jar app_process / com.genymobile.scrcpy.Server 5.0.1 " +
                 "scid=1234abcd log_level=info tunnel_forward=true audio=false control=true cleanup=true " +
-                "video_codec=h264 max_size=0 video_bit_rate=8000000 max_fps=60",
+                "video_codec=h264 max_size=0 video_bit_rate=8000000 max_fps=60 clipboard_autosync=false",
             ServerCommand.build("5.0.1", 0x1234abcd, ScrcpyOptions()),
         )
     }

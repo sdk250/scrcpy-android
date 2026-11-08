@@ -27,6 +27,7 @@ object ServerCommand {
             "max_size=${o.maxSize}",
             "video_bit_rate=${o.bitRate}",
             "max_fps=${o.maxFps}",
+            "clipboard_autosync=false", // defaults to true in 5.x; clipboard sync is a non-goal
         ).joinToString(" ")
 
     /** Abstract socket name the server listens on: "scrcpy_%08x" of the 31-bit scid. */
