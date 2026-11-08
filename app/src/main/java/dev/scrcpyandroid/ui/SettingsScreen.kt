@@ -24,6 +24,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,7 +52,15 @@ private fun hasHevcDecoder(): Boolean =
 @Composable
 fun SettingsScreen(repo: SettingsRepository, onBack: () -> Unit, onOpenKeys: () -> Unit) {
     var opts by remember { mutableStateOf(repo.load()) }
-    val h265 = remember { hasHevcDecoder() }
+    val h265Probe by produceState<Boolean?>(null) { value = withContext(Dispatchers.Default) { hasHevcDecoder() } }
+    val h265 = h265Probe == true
+    // Saved H.265 without a decoder falls back to H.264 (once the probe has finished).
+    LaunchedEffect(h265Probe) {
+        if (h265Probe == false && opts.codec == VideoCodec.H265) {
+            opts = opts.copy(codec = VideoCodec.H264)
+            repo.save(opts)
+        }
+    }
     fun update(o: dev.scrcpyandroid.scrcpy.ScrcpyOptions) {
         opts = o
         repo.save(o)
