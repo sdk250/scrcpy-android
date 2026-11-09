@@ -3,6 +3,7 @@ package dev.scrcpyandroid.ui
 import android.content.Context
 import dev.scrcpyandroid.LanguageStore
 import android.content.pm.ActivityInfo
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.view.Surface
 import android.view.WindowManager
@@ -11,6 +12,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -50,6 +55,23 @@ class MirrorActivity : ComponentActivity() {
         viewModelFactory { initializer { MirrorViewModel(app, id) } }
     }
 
+    /**
+     * Disables Wi-Fi power save on this device while mirroring: power-save sleep adds periodic
+     * latency spikes, which ADB's one-chunk-in-flight flow control turns into video stalls.
+     * Only effective while the activity is in the foreground with the screen on, which is
+     * exactly when we hold it.
+     */
+    private val wifiLock: WifiManager.WifiLock? by lazy {
+        getSystemService(WifiManager::class.java)
+            ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "scrcpy-android:mirror")
+            ?.apply { setReferenceCounted(false) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        wifiLock?.acquire()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -77,7 +99,9 @@ class MirrorActivity : ComponentActivity() {
             }
         }
 
+        val firstUse = KeyBarHintStore.shouldShow(this)
         setContent {
+            var showHint by rememberSaveable { mutableStateOf(firstUse) }
             MaterialTheme(colorScheme = darkColorScheme()) {
                 MirrorScreen(
                     vm = vm,
@@ -96,6 +120,11 @@ class MirrorActivity : ComponentActivity() {
                             finish()
                         }
                     },
+                    showHint = showHint,
+                    onHintDismissed = {
+                        showHint = false
+                        KeyBarHintStore.markShown(this)
+                    },
                 )
             }
         }
@@ -103,6 +132,7 @@ class MirrorActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        wifiLock?.release()
         // Plan decision: leaving the foreground ends mirroring (no decoding without a surface).
         if (!isChangingConfigurations) {
             vm.stopByUser()

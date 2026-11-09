@@ -68,8 +68,9 @@ fun KeyBar(
     onKeyboard: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
+    initiallyExpanded: Boolean = false,
 ) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     // Handle position along its edge, as a fraction of the free span (0 = start, 1 = end).
     var fraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     val buttons = remember(onKey, onKeyboard, onExit) {

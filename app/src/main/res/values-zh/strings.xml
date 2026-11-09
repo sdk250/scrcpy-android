@@ -69,4 +69,8 @@
     <string name="error_usb_permission">未授予 USB 权限，点击重试</string>
     <string name="error_tls_unsupported">不支持 TLS 连接（无线调试配对端口），请使用 adb tcpip 开启的端口</string>
     <string name="error_connect_failed">连接失败：%1$s</string>
+    <string name="hint_keybar_title">功能栏</string>
+    <string name="hint_keybar_body">点屏幕底部的小横条可以展开或收起这一栏，拖动横条可以移动位置。最后一个按钮是“退出”。返回手势会发给被控设备。</string>
+    <string name="hint_keybar_body_landscape">点屏幕右侧的小竖条可以展开或收起这一栏，拖动竖条可以移动位置。最后一个按钮是“退出”。返回手势会发给被控设备。</string>
+    <string name="hint_got_it">知道了</string>
 </resources>

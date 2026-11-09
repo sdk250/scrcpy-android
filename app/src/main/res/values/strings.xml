@@ -75,4 +75,8 @@
     <string name="error_usb_permission">USB permission not granted, tap to retry</string>
     <string name="error_tls_unsupported">TLS connections (wireless debugging port) are not supported; use the port enabled by adb tcpip</string>
     <string name="error_connect_failed">Connection failed: %1$s</string>
+    <string name="hint_keybar_title">Key bar</string>
+    <string name="hint_keybar_body">Tap the small strip at the bottom edge to show or hide this bar; drag the strip to move it. Exit is the last button. Back gestures are sent to the mirrored device.</string>
+    <string name="hint_keybar_body_landscape">Tap the small strip at the right edge to show or hide this bar; drag the strip to move it. Exit is the last button. Back gestures are sent to the mirrored device.</string>
+    <string name="hint_got_it">Got it</string>
 </resources>

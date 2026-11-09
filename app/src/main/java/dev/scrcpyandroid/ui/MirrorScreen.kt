@@ -57,6 +57,8 @@ fun MirrorScreen(
     onExit: () -> Unit,
     onFinish: () -> Unit,
     onSurfaceDestroyed: () -> Unit,
+    showHint: Boolean = false,
+    onHintDismissed: () -> Unit = {},
 ) {
     val size by vm.videoSize.collectAsStateWithLifecycle()
     val ended by vm.ended.collectAsStateWithLifecycle()
@@ -123,7 +125,10 @@ fun MirrorScreen(
             onKey = vm::sendKey,
             onKeyboard = { inputView?.showKeyboard() },
             onExit = onExit,
+            initiallyExpanded = showHint,
         )
+
+        if (showHint) KeyBarHint(landscape = landscape, onDismiss = onHintDismissed)
     }
 
     if (missing) {
