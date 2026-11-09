@@ -61,7 +61,26 @@ sealed class SessionEvent {
     data class VideoSize(val sessionW: Int, val sessionH: Int, val displayW: Int, val displayH: Int) : SessionEvent()
 
     /** Emitted exactly once, last. [serverLog] is the tail (<= 64 KiB) of the server's shell output. */
-    data class Ended(val reason: String, val serverLog: String) : SessionEvent()
+    data class Ended(val reason: EndReason, val serverLog: String) : SessionEvent()
+}
+
+/** Why a session ended; locale-independent, the UI turns it into text. */
+sealed class EndReason {
+    /** [ScrcpySession.stop] was called (user exit). Never shown. */
+    data object Stopped : EndReason()
+    /** The scope running the session was cancelled. Never shown. */
+    data object Cancelled : EndReason()
+    /** The ADB connection closed. */
+    data object ConnectionLost : EndReason()
+    /** No video and the link probe went unanswered (silent network drop). */
+    data object Unresponsive : EndReason()
+    data object ServerExited : EndReason()
+    data object VideoEnded : EndReason()
+    data class VideoError(val detail: String) : EndReason()
+    data class ControlError(val detail: String) : EndReason()
+    data class CodecMismatch(val received: Int, val requested: VideoCodec) : EndReason()
+    /** Push/start/connect failed. */
+    data class StartFailed(val detail: String) : EndReason()
 }
 
 /**
@@ -70,7 +89,7 @@ sealed class SessionEvent {
  *
  * Threads: ADB I/O runs in [scope]; the video socket is read with blocking I/O on a dedicated
  * thread ("scrcpy-video") which also calls the [FrameSink]. [events] is safe to collect anywhere.
- * [stop] emits `Ended("stopped", log)` unless the session already ended.
+ * [stop] emits `Ended(EndReason.Stopped, log)` unless the session already ended.
  */
 class ScrcpySession(
     private val conn: AdbConnection,
@@ -134,14 +153,14 @@ class ScrcpySession(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                finish(if (conn.closed.value) "连接已断开" else (e.message ?: e.toString()))
+                finish(if (conn.closed.value) EndReason.ConnectionLost else EndReason.StartFailed(e.message ?: e.toString()))
             } finally {
                 if (!videoLaunched) releaseVideo()
             }
         }
         // Also runs if the job is cancelled (e.g. [scope] cancelled) before its body ever started.
         job.invokeOnCompletion { cause ->
-            if (cause != null) finish("cancelled")
+            if (cause != null) finish(EndReason.Cancelled)
             if (!videoLaunched) releaseVideo()
         }
         startJob = job
@@ -160,8 +179,8 @@ class ScrcpySession(
         outgoing.trySend(msg)
     }
 
-    /** Idempotent. Closes all streams; emits `Ended("stopped")` if the session had not ended yet. */
-    fun stop() = finish("stopped", waitForServerLog = false)
+    /** Idempotent. Closes all streams; emits `Ended(EndReason.Stopped)` if the session had not ended yet. */
+    fun stop() = finish(EndReason.Stopped, waitForServerLog = false)
 
     /**
      * Completes once the [FrameSink] has been released and the video thread has exited (or was
@@ -193,7 +212,7 @@ class ScrcpySession(
         val c = adopt(openWithRetry(service)) { control = it }
         val header = withContext(videoDispatcher) { reader.readHeader() }
         if (header.codecId != options.codec.id) {
-            finish("编码格式不符: 收到 0x%08x，请求的是 %s".format(header.codecId, options.codec.arg))
+            finish(EndReason.CodecMismatch(header.codecId, options.codec))
             return
         }
 
@@ -249,7 +268,7 @@ class ScrcpySession(
         while (!ended.get()) {
             if (withTimeoutOrNull(videoTimeoutMs) { videoActivity.receive() } != null) continue
             if (!probeLink()) {
-                finish("连接已断开 (设备无响应)")
+                finish(EndReason.Unresponsive)
                 conn.close()
                 return
             }
@@ -276,7 +295,7 @@ class ScrcpySession(
         } finally {
             shellDone.complete(Unit)
         }
-        finish(if (conn.closed.value) "连接已断开" else "scrcpy-server 已退出")
+        finish(if (conn.closed.value) EndReason.ConnectionLost else EndReason.ServerExited)
     }
 
     /** Device messages are discarded, but must be read so flow control never stalls the server. */
@@ -312,7 +331,7 @@ class ScrcpySession(
             } catch (e: IOException) {
                 return // stream/connection gone; ending is detected via the shell or video stream
             } catch (e: Exception) {
-                finish("控制通道出错: ${e.message ?: e}")
+                finish(EndReason.ControlError(e.message ?: e.toString()))
                 return
             }
         }
@@ -340,9 +359,9 @@ class ScrcpySession(
                     s.onPacket(p)
                 }
             }
-            finish(if (conn.closed.value) "连接已断开" else "视频流已结束")
+            finish(if (conn.closed.value) EndReason.ConnectionLost else EndReason.VideoEnded)
         } catch (e: Throwable) {
-            finish(if (conn.closed.value) "连接已断开" else "视频接收出错: ${e.message ?: e}")
+            finish(if (conn.closed.value) EndReason.ConnectionLost else EndReason.VideoError(e.message ?: e.toString()))
         } finally {
             releaseVideo()
         }
@@ -386,7 +405,7 @@ class ScrcpySession(
      * Ends the session once. Video/control are closed right away; unless stopping explicitly, the
      * server is given a short grace period to print its last words before Ended is emitted.
      */
-    private fun finish(reason: String, waitForServerLog: Boolean = true) {
+    private fun finish(reason: EndReason, waitForServerLog: Boolean = true) {
         synchronized(emitLock) {
             if (!ended.compareAndSet(false, true)) return
         }
@@ -413,7 +432,7 @@ class ScrcpySession(
         }
     }
 
-    private fun emitEnded(reason: String) {
+    private fun emitEnded(reason: EndReason) {
         if (!endedEmitted.compareAndSet(false, true)) return
         shell?.close()
         synchronized(emitLock) { _events.tryEmit(SessionEvent.Ended(reason, log.text())) }

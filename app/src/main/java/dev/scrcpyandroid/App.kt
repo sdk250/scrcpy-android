@@ -26,7 +26,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        settings = SettingsRepository(getSharedPreferences("settings", MODE_PRIVATE))
+        settings = SettingsRepository(getSharedPreferences(LanguageStore.PREFS, MODE_PRIVATE))
         keyStore = AdbKeyStore(File(filesDir, "adb"))
         registry = DeviceRegistry(appScope, { keyStore.loadOrCreate() }, PrefsAddressStore(this))
         usbMonitor = UsbMonitor(this, registry).also { it.start() }

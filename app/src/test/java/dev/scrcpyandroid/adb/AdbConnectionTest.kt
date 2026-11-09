@@ -147,8 +147,7 @@ class AdbConnectionTest {
         peer.expect(Adb.CNXN)
         peer.send(Adb.STLS, 1, 0)
         val e = c.await().exceptionOrNull()
-        assertTrue(e is IOException)
-        assertTrue(e!!.message!!.contains("TLS"))
+        assertTrue(e is AdbTlsUnsupportedException)
     }
 
     @Test

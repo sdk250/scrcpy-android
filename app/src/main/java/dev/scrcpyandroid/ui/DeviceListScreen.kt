@@ -114,7 +114,7 @@ private fun DeviceRow(d: DeviceEntry, registry: DeviceRegistry, onMirror: (Strin
                     d.model?.let { Text(it) }
                     if (d.state == DeviceState.UNAUTHORIZED) Text(stringResource(R.string.unauthorized_hint))
                     if (d.state == DeviceState.OFFLINE && d.error != null) {
-                        Text(d.error, color = MaterialTheme.colorScheme.error)
+                        Text(deviceErrorText(d.error), color = MaterialTheme.colorScheme.error)
                     }
                 }
             },

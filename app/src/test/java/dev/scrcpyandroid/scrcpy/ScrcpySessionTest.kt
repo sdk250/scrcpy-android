@@ -292,7 +292,7 @@ class ScrcpySessionTest {
         testScheduler.advanceTimeBy(ScrcpySession.PROBE_TIMEOUT_MS + 100)
         runCurrent()
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertEquals("连接已断开 (设备无响应)", ended.reason)
+        assertEquals(EndReason.Unresponsive, ended.reason)
         assertTrue(conn.closed.value)
         s.awaitReleased()
     }
@@ -322,7 +322,7 @@ class ScrcpySessionTest {
         dev.write(l, r, "ERROR: xyz\n".toByteArray())
         dev.peer.send(Adb.CLSE, r, l)
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertEquals("scrcpy-server 已退出", ended.reason)
+        assertEquals(EndReason.ServerExited, ended.reason)
         assertTrue(ended.serverLog, ended.serverLog.contains("ERROR: xyz"))
         started.await()
         s.awaitReleased() // video thread never started
@@ -353,7 +353,7 @@ class ScrcpySessionTest {
         dev.serveShell()
         dev.serveSockets(videoMeta(codecId = VideoCodec.H265.id))
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertTrue(ended.reason, ended.reason.startsWith("编码格式不符"))
+        assertTrue(ended.reason.toString(), ended.reason is EndReason.CodecMismatch)
         started.await()
     }
 
@@ -374,7 +374,7 @@ class ScrcpySessionTest {
         s.stop()
         s.send(byteArrayOf(1)) // dropped
         testScheduler.advanceUntilIdle()
-        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), ends)
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended(EndReason.Stopped, "")), ends)
         collector.cancel()
     }
 
@@ -431,11 +431,11 @@ class ScrcpySessionTest {
         s.events.first { it == size(1080, 1920) } // sink exists, callback captured
         s.stop()
         decoded!!(640, 480) // late decoder callback must not overwrite Ended
-        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended(EndReason.Stopped, "")), s.events.replayCache)
         s.awaitReleased()
         assertEquals("release", sink.calls.last())
         assertTrue(sink.calls.toString(), sink.calls.contains("abort"))
-        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended(EndReason.Stopped, "")), s.events.replayCache)
     }
 
     @Test
@@ -445,7 +445,7 @@ class ScrcpySessionTest {
         s.stop()
         s.awaitReleased()
         s.start { _, _ -> error("must not create a sink") }
-        assertEquals(listOf<SessionEvent>(SessionEvent.Ended("stopped", "")), s.events.replayCache)
+        assertEquals(listOf<SessionEvent>(SessionEvent.Ended(EndReason.Stopped, "")), s.events.replayCache)
     }
 
     @Test
@@ -459,6 +459,6 @@ class ScrcpySessionTest {
         withTimeout(5_000) { s.awaitReleased() }
         started.await()
         val ended = s.events.replayCache.single() as SessionEvent.Ended
-        assertEquals("cancelled", ended.reason)
+        assertEquals(EndReason.Cancelled, ended.reason)
     }
 }

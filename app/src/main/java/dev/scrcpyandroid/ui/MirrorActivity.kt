@@ -1,5 +1,7 @@
 package dev.scrcpyandroid.ui
 
+import android.content.Context
+import dev.scrcpyandroid.LanguageStore
 import android.content.pm.ActivityInfo
 import android.os.Bundle
 import android.view.Surface
@@ -40,6 +42,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** Fullscreen mirroring of one device. Expects extra [EXTRA_DEVICE_ID]. */
 class MirrorActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(LanguageStore.wrap(newBase))
+
     private val vm: MirrorViewModel by viewModels {
         val app = application as App
         val id = intent.getStringExtra(EXTRA_DEVICE_ID).orEmpty()
@@ -178,7 +182,7 @@ class MirrorViewModel(private val app: App, private val deviceId: String) : View
      */
     fun detachForRecreation() {
         val s = session ?: return
-        eventsJob?.cancel() // its Ended("stopped") must not show a dialog
+        eventsJob?.cancel() // its Ended(Stopped) must not show a dialog
         eventsJob = null
         s.stop()
         awaitReleasedBlocking(s)

@@ -138,7 +138,7 @@ fun MirrorScreen(
     ended?.let { e ->
         AlertDialog(
             onDismissRequest = onFinish,
-            title = { Text(e.reason) },
+            title = { Text(endReasonText(e.reason)) },
             text = {
                 Box(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
                     SelectionContainer {

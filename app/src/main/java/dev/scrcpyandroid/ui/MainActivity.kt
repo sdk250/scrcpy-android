@@ -1,5 +1,7 @@
 package dev.scrcpyandroid.ui
 
+import android.content.Context
+import dev.scrcpyandroid.LanguageStore
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
@@ -21,6 +23,8 @@ import dev.scrcpyandroid.App
 private enum class Screen { LIST, SETTINGS, KEYS }
 
 class MainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) = super.attachBaseContext(LanguageStore.wrap(newBase))
+
     /** Debounces double taps on a DEVICE row, which would otherwise start two mirror activities. */
     private var lastMirrorAt = 0L
 
@@ -42,6 +46,11 @@ class MainActivity : ComponentActivity() {
                     )
                     Screen.SETTINGS -> SettingsScreen(
                         repo = app.settings,
+                        language = LanguageStore.get(this),
+                        onLanguageChange = { lang ->
+                            LanguageStore.set(this, lang)
+                            recreate()
+                        },
                         onBack = { screen = Screen.LIST },
                         onOpenKeys = { screen = Screen.KEYS },
                     )

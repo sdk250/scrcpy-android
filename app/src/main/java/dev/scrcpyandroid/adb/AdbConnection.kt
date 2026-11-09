@@ -15,6 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class AdbStreamRefusedException(service: String) : IOException(service)
 
+/** The device answered CNXN with STLS (Android 11+ wireless-debugging port), which is not supported. */
+class AdbTlsUnsupportedException : IOException("TLS connections (wireless debugging port) are not supported")
+
 class AdbConnection private constructor(
     private val transport: AdbTransport,
     private val scope: CoroutineScope,
@@ -169,7 +172,7 @@ class AdbConnection private constructor(
                             conn.readJob = scope.launch { conn.readLoop() }
                             return conn
                         }
-                        Adb.STLS -> throw IOException("不支持 TLS 连接（无线调试配对端口）")
+                        Adb.STLS -> throw AdbTlsUnsupportedException()
                         else -> throw AdbProtocolException("Unexpected command 0x${msg.command.toString(16)} during handshake")
                     }
                 }

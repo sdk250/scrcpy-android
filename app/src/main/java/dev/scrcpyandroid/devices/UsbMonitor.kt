@@ -81,7 +81,7 @@ class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
     /** Permission denied or dialog dismissed: list it as OFFLINE; tapping it asks again. */
     private fun onDenied(device: UsbDevice) {
         if (UsbAdb.findAdbInterface(device) == null) return
-        registry.usbUnavailable(idOf(device), PERMISSION_DENIED) { retry(device) }
+        registry.usbUnavailable(idOf(device), DeviceError.UsbPermissionDenied) { retry(device) }
     }
 
     /** Tap on the OFFLINE entry: ask for permission if still missing, else connect again. */
@@ -115,6 +115,5 @@ class UsbMonitor(context: Context, private val registry: DeviceRegistry) {
 
     private companion object {
         const val ACTION_PERMISSION = "dev.scrcpyandroid.USB_PERMISSION"
-        const val PERMISSION_DENIED = "未授予 USB 权限，点击重试"
     }
 }

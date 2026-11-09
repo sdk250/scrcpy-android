@@ -2,6 +2,7 @@ package dev.scrcpyandroid.devices
 
 import dev.scrcpyandroid.adb.AdbConnection
 import dev.scrcpyandroid.adb.AdbKeyPair
+import dev.scrcpyandroid.adb.AdbTlsUnsupportedException
 import dev.scrcpyandroid.adb.AdbTransport
 import dev.scrcpyandroid.adb.TcpTransport
 import kotlinx.coroutines.CancellationException
@@ -21,8 +22,17 @@ data class DeviceEntry(
     val kind: LinkKind,
     val state: DeviceState,
     val model: String? = null,
-    val error: String? = null,
+    val error: DeviceError? = null,
 )
+
+/** Why an entry is OFFLINE; locale-independent, the UI turns it into text. */
+sealed class DeviceError {
+    data object ConnectionLost : DeviceError()
+    data object UsbPermissionDenied : DeviceError()
+    data object TlsUnsupported : DeviceError()
+    /** Connect/handshake failure; [detail] is the exception message (system text). */
+    data class Failed(val detail: String) : DeviceError()
+}
 
 /** In-app "adb devices": USB first, then TCP in insertion order. */
 class DeviceRegistry(
@@ -81,7 +91,7 @@ class DeviceRegistry(
      * A plugged-in USB device that cannot be used yet (e.g. USB permission denied): listed as
      * OFFLINE with [error]; tapping it runs [retry] (via [DeviceRegistry.retry]).
      */
-    fun usbUnavailable(id: String, error: String, retry: () -> Unit) {
+    fun usbUnavailable(id: String, error: DeviceError, retry: () -> Unit) {
         synchronized(lock) {
             val slot = usb.getOrPut(id) { Slot(DeviceEntry(id, LinkKind.USB, DeviceState.OFFLINE)) }
             stop(slot)
@@ -190,13 +200,17 @@ class DeviceRegistry(
             val c = conn
             update(slot, me, { it.copy(state = DeviceState.DEVICE, model = c.model, error = null) }, c)
             c.closed.first { it }
-            finishClosed(slot, me, CONNECTION_LOST)
+            finishClosed(slot, me, DeviceError.ConnectionLost)
         } catch (e: CancellationException) {
             conn?.close()
             throw e
         } catch (e: Throwable) {
             conn?.close()
-            finishClosed(slot, me, e.message ?: e.javaClass.simpleName)
+            finishClosed(
+                slot, me,
+                if (e is AdbTlsUnsupportedException) DeviceError.TlsUnsupported
+                else DeviceError.Failed(e.message ?: e.javaClass.simpleName),
+            )
         }
     }
 
@@ -204,7 +218,7 @@ class DeviceRegistry(
      * The connection ended or could not be made. The entry stays as OFFLINE with [error] for both
      * kinds (USB entries are removed only by [detach], i.e. when unplugged) so it can be retried.
      */
-    private fun finishClosed(slot: Slot, me: Job?, error: String) {
+    private fun finishClosed(slot: Slot, me: Job?, error: DeviceError) {
         synchronized(lock) {
             if (slot.job !== me) return
             slot.conn = null
@@ -212,9 +226,5 @@ class DeviceRegistry(
             slot.entry = slot.entry.copy(state = DeviceState.OFFLINE, model = null, error = error)
             publish()
         }
-    }
-
-    private companion object {
-        const val CONNECTION_LOST = "连接已断开"
     }
 }

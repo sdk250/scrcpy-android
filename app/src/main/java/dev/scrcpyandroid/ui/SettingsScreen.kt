@@ -19,6 +19,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -35,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.clickable
+import dev.scrcpyandroid.AppLanguage
 import dev.scrcpyandroid.R
 import dev.scrcpyandroid.scrcpy.SettingsRepository
 import dev.scrcpyandroid.scrcpy.VideoCodec
@@ -50,7 +54,13 @@ private fun hasHevcDecoder(): Boolean =
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(repo: SettingsRepository, onBack: () -> Unit, onOpenKeys: () -> Unit) {
+fun SettingsScreen(
+    repo: SettingsRepository,
+    language: AppLanguage,
+    onLanguageChange: (AppLanguage) -> Unit,
+    onBack: () -> Unit,
+    onOpenKeys: () -> Unit,
+) {
     var opts by remember { mutableStateOf(repo.load()) }
     val h265Probe by produceState<Boolean?>(null) { value = withContext(Dispatchers.Default) { hasHevcDecoder() } }
     val h265 = h265Probe == true
@@ -75,6 +85,23 @@ fun SettingsScreen(repo: SettingsRepository, onBack: () -> Unit, onOpenKeys: () 
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())) {
+            // Inline buttons, not a dropdown: changing the language recreates the activity, and
+            // recreating while a popup window is still animating out leaks a focused window (ANR).
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.setting_language)) },
+                trailingContent = {
+                    SingleChoiceSegmentedButtonRow {
+                        AppLanguage.entries.forEachIndexed { i, l ->
+                            SegmentedButton(
+                                selected = l == language,
+                                onClick = { if (l != language) onLanguageChange(l) },
+                                shape = SegmentedButtonDefaults.itemShape(i, AppLanguage.entries.size),
+                                icon = {},
+                            ) { Text(l.label) }
+                        }
+                    }
+                },
+            )
             val native = stringResource(R.string.native_size)
             Choice(
                 stringResource(R.string.setting_max_size), MAX_SIZES, opts.maxSize,

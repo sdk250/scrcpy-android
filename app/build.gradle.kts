@@ -6,6 +6,13 @@ plugins {
 
 android {
     namespace = "dev.scrcpyandroid"
+
+    // The UI language is chosen in-app, so every language must be in the install.
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
     compileSdk = 35
 
     defaultConfig {

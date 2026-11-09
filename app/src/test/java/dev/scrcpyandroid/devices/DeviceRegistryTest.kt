@@ -2,6 +2,7 @@ package dev.scrcpyandroid.devices
 
 import dev.scrcpyandroid.adb.Adb
 import dev.scrcpyandroid.adb.AdbKeyPair
+import dev.scrcpyandroid.adb.AdbTlsUnsupportedException
 import dev.scrcpyandroid.adb.AdbTransport
 import dev.scrcpyandroid.adb.FakeAdbd
 import kotlinx.coroutines.CoroutineScope
@@ -83,7 +84,15 @@ class DeviceRegistryTest {
         runCurrent()
         val e = reg.devices.value.single()
         assertEquals(DeviceState.OFFLINE, e.state)
-        assertTrue(e.error!!.contains("refused"))
+        assertEquals(DeviceError.Failed("refused"), e.error)
+    }
+
+    @Test
+    fun tlsPortIsReportedAsTlsUnsupported() = runTest {
+        val reg = registry { throw AdbTlsUnsupportedException() }
+        reg.connectTcp(addr)
+        runCurrent()
+        assertEquals(DeviceError.TlsUnsupported, reg.devices.value.single().error)
     }
 
     @Test
@@ -189,7 +198,7 @@ class DeviceRegistryTest {
         runCurrent()
         val e = reg.devices.value.single()
         assertEquals(DeviceState.OFFLINE, e.state)
-        assertTrue(e.error!!.contains("no permission"))
+        assertEquals(DeviceError.Failed("no permission"), e.error)
     }
 
     @Test
@@ -197,12 +206,12 @@ class DeviceRegistryTest {
         val reg = registry(MemStore(listOf("a:5555"))) { error("unused") }
         var retries = 0
         val retry = { retries++; Unit }
-        reg.usbUnavailable("/dev/bus/usb/001/002", "未授予 USB 权限，点击重试", retry)
+        reg.usbUnavailable("/dev/bus/usb/001/002", DeviceError.UsbPermissionDenied, retry)
         val e = reg.devices.value.first()
         assertEquals(listOf("/dev/bus/usb/001/002", "a:5555"), reg.devices.value.map { it.id })
         assertEquals(LinkKind.USB, e.kind)
         assertEquals(DeviceState.OFFLINE, e.state)
-        assertEquals("未授予 USB 权限，点击重试", e.error)
+        assertEquals(DeviceError.UsbPermissionDenied, e.error)
 
         reg.retry(e.id)
         assertEquals(1, retries)
@@ -212,7 +221,7 @@ class DeviceRegistryTest {
         assertEquals(1, retries)
 
         // Permission denied again.
-        reg.usbUnavailable(e.id, "未授予 USB 权限，点击重试", retry)
+        reg.usbUnavailable(e.id, DeviceError.UsbPermissionDenied, retry)
         assertEquals(DeviceState.OFFLINE, reg.devices.value.first().state)
         assertEquals(2, reg.devices.value.size)
     }
@@ -223,7 +232,7 @@ class DeviceRegistryTest {
         val reg = registry { error("unused") }
         lateinit var retry: () -> Unit
         retry = { reg.attach("SER1", LinkKind.USB, retry) { peer.transport } }
-        reg.usbUnavailable("SER1", "未授予 USB 权限，点击重试", retry)
+        reg.usbUnavailable("SER1", DeviceError.UsbPermissionDenied, retry)
         reg.retry("SER1")
         runCurrent()
         assertEquals(DeviceState.CONNECTING, reg.devices.value.single().state)
@@ -253,7 +262,7 @@ class DeviceRegistryTest {
         val e = reg.devices.value.single()
         assertEquals("SER1", e.id)
         assertEquals(DeviceState.OFFLINE, e.state)
-        assertNotNull(e.error)
+        assertEquals(DeviceError.ConnectionLost, e.error)
         assertNull(reg.connection("SER1"))
 
         peer = FakeAdbd()
