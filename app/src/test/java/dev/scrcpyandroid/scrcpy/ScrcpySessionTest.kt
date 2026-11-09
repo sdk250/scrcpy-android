@@ -250,7 +250,7 @@ class ScrcpySessionTest {
     }
 
     @Test
-    fun videoInactivityClosesConnectionAndEnds() = runTest(timeout = 10.seconds) {
+    fun videoInactivityProbesLinkAndEndsOnlyWhenProbeUnanswered() = runTest(timeout = 10.seconds) {
         val (dev, conn) = connected()
         val s = session(conn, videoTimeoutMs = 5000)
         val sink = RecordingSink()
@@ -272,13 +272,27 @@ class ScrcpySessionTest {
         testScheduler.advanceTimeBy(4000)
         runCurrent()
         assertFalse(isEnded())
-        assertFalse(conn.closed.value)
 
-        // Then the stream goes silent (e.g. Wi-Fi dropped without a TCP reset).
+        // Static screen: the encoder sends nothing, but the link answers the probe -> still alive.
         testScheduler.advanceTimeBy(1500)
         runCurrent()
+        val probe = dev.nextOpen()
+        assertEquals(ScrcpySession.PROBE_SERVICE, probe.first)
+        dev.peer.send(Adb.OKAY, 999, probe.second)
+        runCurrent()
+        testScheduler.advanceTimeBy(1000)
+        runCurrent()
+        assertFalse(isEnded())
+        assertFalse(conn.closed.value)
+
+        // Wi-Fi dropped without a TCP reset: the next probe goes unanswered.
+        testScheduler.advanceTimeBy(5000)
+        runCurrent()
+        assertEquals(ScrcpySession.PROBE_SERVICE, dev.nextOpen().first)
+        testScheduler.advanceTimeBy(ScrcpySession.PROBE_TIMEOUT_MS + 100)
+        runCurrent()
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertEquals("连接已断开 (超过 5 秒未收到视频数据)", ended.reason)
+        assertEquals("连接已断开 (设备无响应)", ended.reason)
         assertTrue(conn.closed.value)
         s.awaitReleased()
     }
@@ -308,7 +322,7 @@ class ScrcpySessionTest {
         dev.write(l, r, "ERROR: xyz\n".toByteArray())
         dev.peer.send(Adb.CLSE, r, l)
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertEquals("server exited", ended.reason)
+        assertEquals("scrcpy-server 已退出", ended.reason)
         assertTrue(ended.serverLog, ended.serverLog.contains("ERROR: xyz"))
         started.await()
         s.awaitReleased() // video thread never started
@@ -339,7 +353,7 @@ class ScrcpySessionTest {
         dev.serveShell()
         dev.serveSockets(videoMeta(codecId = VideoCodec.H265.id))
         val ended = s.events.first { it is SessionEvent.Ended } as SessionEvent.Ended
-        assertTrue(ended.reason, ended.reason.startsWith("unexpected codec"))
+        assertTrue(ended.reason, ended.reason.startsWith("编码格式不符"))
         started.await()
     }
 

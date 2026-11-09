@@ -38,6 +38,28 @@ class RemoteInputView(context: Context, private val send: (ByteArray) -> Unit) :
         imm.showSoftInput(this, 0)
     }
 
+    /**
+     * Hardware key events (physical/Bluetooth keyboard, `input text`) bypass the InputConnection and
+     * arrive here. Forward them, except BACK (handled by the screen's BackHandler) and the
+     * controller's own volume/power keys.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = forwardKey(event) || super.onKeyDown(keyCode, event)
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = forwardKey(event) || super.onKeyUp(keyCode, event)
+
+    private fun forwardKey(event: KeyEvent): Boolean {
+        if (event.keyCode in LOCAL_KEYS) return false
+        send(ControlMessages.keycode(event.action, event.keyCode, event.repeatCount, event.metaState))
+        return true
+    }
+
+    private companion object {
+        val LOCAL_KEYS = setOf(
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN,
+            KeyEvent.KEYCODE_VOLUME_MUTE, KeyEvent.KEYCODE_POWER,
+        )
+    }
+
     private fun sendKey(keycode: Int) {
         send(ControlMessages.keycode(KeyEvent.ACTION_DOWN, keycode))
         send(ControlMessages.keycode(KeyEvent.ACTION_UP, keycode))

@@ -134,7 +134,7 @@ class ScrcpySession(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                finish(if (conn.closed.value) "connection lost" else (e.message ?: e.toString()))
+                finish(if (conn.closed.value) "连接已断开" else (e.message ?: e.toString()))
             } finally {
                 if (!videoLaunched) releaseVideo()
             }
@@ -193,7 +193,7 @@ class ScrcpySession(
         val c = adopt(openWithRetry(service)) { control = it }
         val header = withContext(videoDispatcher) { reader.readHeader() }
         if (header.codecId != options.codec.id) {
-            finish("unexpected codec 0x%08x (requested %s)".format(header.codecId, options.codec.arg))
+            finish("编码格式不符: 收到 0x%08x，请求的是 %s".format(header.codecId, options.codec.arg))
             return
         }
 
@@ -237,19 +237,37 @@ class ScrcpySession(
     }
 
     /**
-     * Spec 6.9: a dropped network (no TCP reset) would otherwise go unnoticed forever. The server
-     * keeps the stream alive on a static screen (SurfaceEncoder sets
-     * KEY_REPEAT_PREVIOUS_FRAME_AFTER = 100 ms), so [videoTimeoutMs] without any packet means the
-     * link is dead: close the ADB connection (the registry then marks the device OFFLINE).
+     * Spec 6.9: a dropped network (no TCP reset) would otherwise go unnoticed forever. A static
+     * screen legitimately produces no video (KEY_REPEAT_PREVIOUS_FRAME_AFTER is not honoured by
+     * every encoder, e.g. Pixel 7 Pro / Android 17), so silence alone proves nothing: after
+     * [videoTimeoutMs] without a packet, probe the link with an ADB round trip (OPEN of a no-op
+     * shell). Any answer (OKAY or refusal) means the device is alive; no answer within
+     * [PROBE_TIMEOUT_MS] means the link is dead: close the ADB connection (the registry then marks
+     * the device OFFLINE).
      */
     private suspend fun watchVideo() {
         while (!ended.get()) {
-            if (withTimeoutOrNull(videoTimeoutMs) { videoActivity.receive() } == null) {
-                finish("连接已断开 (超过 ${videoTimeoutMs / 1000} 秒未收到视频数据)")
+            if (withTimeoutOrNull(videoTimeoutMs) { videoActivity.receive() } != null) continue
+            if (!probeLink()) {
+                finish("连接已断开 (设备无响应)")
                 conn.close()
                 return
             }
         }
+    }
+
+    private suspend fun probeLink(): Boolean {
+        val answered = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
+            try {
+                conn.open(PROBE_SERVICE).close()
+                true
+            } catch (e: AdbStreamRefusedException) {
+                true
+            } catch (e: IOException) {
+                false
+            }
+        }
+        return answered == true
     }
 
     private suspend fun collectLog(sh: AdbStream) {
@@ -258,7 +276,7 @@ class ScrcpySession(
         } finally {
             shellDone.complete(Unit)
         }
-        finish(if (conn.closed.value) "connection lost" else "server exited")
+        finish(if (conn.closed.value) "连接已断开" else "scrcpy-server 已退出")
     }
 
     /** Device messages are discarded, but must be read so flow control never stalls the server. */
@@ -294,7 +312,7 @@ class ScrcpySession(
             } catch (e: IOException) {
                 return // stream/connection gone; ending is detected via the shell or video stream
             } catch (e: Exception) {
-                finish("control error: ${e.message ?: e}")
+                finish("控制通道出错: ${e.message ?: e}")
                 return
             }
         }
@@ -322,9 +340,9 @@ class ScrcpySession(
                     s.onPacket(p)
                 }
             }
-            finish(if (conn.closed.value) "connection lost" else "video stream ended")
+            finish(if (conn.closed.value) "连接已断开" else "视频流已结束")
         } catch (e: Throwable) {
-            finish(if (conn.closed.value) "connection lost" else "video error: ${e.message ?: e}")
+            finish(if (conn.closed.value) "连接已断开" else "视频接收出错: ${e.message ?: e}")
         } finally {
             releaseVideo()
         }
@@ -422,6 +440,8 @@ class ScrcpySession(
         private const val SOCKET_RETRY_MS = 100L
         private const val SHELL_GRACE_MS = 1000L
         const val DEFAULT_VIDEO_TIMEOUT_MS = 5000L
+        const val PROBE_TIMEOUT_MS = 3000L
+        const val PROBE_SERVICE = "shell:true"
 
         fun serverMtime(version: String): Int = (version.hashCode() and 0x7FFFFFFF)
     }
