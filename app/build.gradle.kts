@@ -24,6 +24,15 @@ android {
         buildConfigField("String", "SCRCPY_VERSION", "\"${property("scrcpy.serverVersion")}\"")
     }
 
+    buildTypes {
+        release {
+            // Unsigned on purpose: sign the APK yourself (apksigner).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
